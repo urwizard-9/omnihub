@@ -1,0 +1,46 @@
+{
+  "hash": "b9351877",
+  "configHash": "3a3f21af",
+  "lockfileHash": "a14b7802",
+  "browserHash": "741e3ca3",
+  "optimized": {
+    "react/jsx-dev-runtime": {
+      "src": "../../node_modules/react/jsx-dev-runtime.js",
+      "file": "react_jsx-dev-runtime.js",
+      "fileHash": "025f7564",
+      "needsInterop": true
+    },
+    "react": {
+      "src": "../../node_modules/react/index.js",
+      "file": "react.js",
+      "fileHash": "f506298b",
+      "needsInterop": true
+    },
+    "react-dom/client": {
+      "src": "../../node_modules/react-dom/client.js",
+      "file": "react-dom_client.js",
+      "fileHash": "171836e0",
+      "needsInterop": true
+    },
+    "lucide-react": {
+      "src": "../../node_modules/lucide-react/dist/esm/lucide-react.js",
+      "file": "lucide-react.js",
+      "fileHash": "b9ce70e8",
+      "needsInterop": false
+    },
+    "recharts": {
+      "src": "../../node_modules/recharts/es6/index.js",
+      "file": "recharts.js",
+      "fileHash": "13457094",
+      "needsInterop": false
+    }
+  },
+  "chunks": {
+    "chunk-JQGNYJIG": {
+      "file": "chunk-JQGNYJIG.js"
+    },
+    "chunk-COGEVBLD": {
+      "file": "chunk-COGEVBLD.js"
+    }
+  }
+}
