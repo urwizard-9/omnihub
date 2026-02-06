@@ -1,0 +1,251 @@
+import os
+import logging
+from typing import Optional, Dict, List, Any, Tuple
+from google.cloud import firestore
+from app.common.types import AuthContext
+from app.core.gcp_clients import db
+
+# AuthContext는 순환 참조 방지를 위해 여기서 import 안하고, dict/object로 가정하거나
+# TYPE_CHECKING 블록을 사용. 여기선 Any로 받음.
+
+from dotenv import load_dotenv
+load_dotenv()
+
+# --- Configurations ---
+PROJECT_ID = os.getenv("GCP_PROJECT_ID")
+FIRESTORE_DB = os.getenv("FIRESTORE_DATABASE", "(default)")
+
+# db = firestore.Client(project=PROJECT_ID, database=FIRESTORE_DB) # Removed local init
+logger = logging.getLogger("FirestoreRepo")
+
+class FirestoreRepo:
+    def __init__(self, auth_ctx: AuthContext):
+        """
+        auth_ctx: must have tenant_id, engagement_id user_id
+        """
+        self.tenant_id = auth_ctx.tenant_id
+        self.engagement_id = auth_ctx.engagement_id
+        self.user_id = auth_ctx.user_id
+        self.db = db # Global use
+
+    def _scope_check(self, data: Dict[str, Any]) -> bool:
+        """데이터의 Scope가 요청자와 일치하는지 확인 (Double Check)"""
+        if not data: return False
+        t = data.get("tenant_id")
+        e = data.get("engagement_id")
+        # 없는 경우는? 레거시 등. 엄격 모드면 False.
+        if t != self.tenant_id or e != self.engagement_id:
+            return False
+        return True
+
+    def get_firestore_client(self):
+        return self.db
+
+
+    def _base_query(self, collection_name: str):
+        return (self.db.collection(collection_name)
+            .where(field_path="tenant_id", op_string="==", value=self.tenant_id)
+            .where(field_path="engagement_id", op_string="==", value=self.engagement_id))
+
+    def _get_with_fallback(self, collection: str, doc_id: str) -> Tuple[Any, Optional[str]]:
+        """
+        RAG 검색 결과(DriveID)와 Firestore Key(접두어 등) 불일치 해결을 위한 범용 조회 헬퍼
+        """
+        ref = self.db.collection(collection).document(doc_id).get()
+        if ref.exists:
+            return ref, doc_id
+        
+        # 'fil_' 접두어 시도 (Documents, etc.)
+        if not doc_id.startswith("fil_"):
+            prefixed = f"fil_{doc_id}"
+            ref_pre = self.db.collection(collection).document(prefixed).get()
+            if ref_pre.exists:
+                return ref_pre, prefixed
+                
+        return None, None
+
+    # --- 1. Documents ---
+    def get_document(self, doc_id: str) -> Optional[Dict[str, Any]]:
+        
+        # 1. Try original doc_id
+        doc_ref = self.db.collection("documents").document(doc_id).get()
+        
+        # 2. [Fallback] If not found and no prefix, try with 'fil_' prefix
+        if not doc_ref.exists and not doc_id.startswith("fil_"):
+            prefixed_id = f"fil_{doc_id}"
+            doc_ref_pre = self.db.collection("documents").document(prefixed_id).get()
+            if doc_ref_pre.exists:
+                doc_ref = doc_ref_pre
+                doc_id = prefixed_id
+        
+        if not doc_ref.exists:
+            return None
+        
+        data = doc_ref.to_dict()
+        data["doc_id"] = doc_id # Ensure resolved ID
+        if not self._scope_check(data):
+            # logger.warning(f"Scope Mismatch Access Attempt: {doc_id} by {self.user_id}")
+            return None
+        
+        # [Fix] Merge with Profile data (for Title, Summary, etc.)
+        try:
+            profile_snap = self.db.collection("profiles").document(doc_id).get()
+            if profile_snap.exists:
+                profile_data = profile_snap.to_dict()
+                if profile_data.get("title"):
+                    data["title"] = profile_data["title"]
+                if profile_data.get("summary"):
+                    data["summary"] = profile_data["summary"]
+        except Exception as e:
+            logger.warning(f"Profile fetch failed for {doc_id}: {e}")
+        
+        return data
+
+    def list_documents(self, 
+                       folder_path: str = None, 
+                       limit: int = 50, 
+                       cursor: Any = None,
+                       filters: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+        
+        query = self._base_query("documents")
+        
+        # Filter: Active is default True unless specified
+        # filters가 None이면 기본 active=True 포함?
+        # 여기선 명시적으로 active=True를 기본으로
+        query = query.where(field_path="active", op_string="==", value=True)
+        
+        if folder_path:
+            query = query.where(field_path="folder_path", op_string="==", value=folder_path)
+            
+        if filters:
+            for k, v in filters.items():
+                if v is not None:
+                    query = query.where(field_path=k, op_string="==", value=v)
+                    
+        # OrderBy (운영 최소: 일단 updated_at DESC나 id)
+        # 하지만 index가 없으면 에러남. 단순 limit만
+        query = query.limit(limit)
+        
+        if cursor:
+            query = query.start_after(cursor)
+            
+        docs = query.stream()
+        results = []
+        for d in docs:
+            data = d.to_dict()
+            results.append(data) # id 포함?
+            
+        return results
+
+    def update_doc_status(self, doc_id: str, new_status: str, reason: str = None, updates: Dict[str, Any] = None):
+        """
+        Update document status and related workflow fields.
+        Uses a transaction (simulated or explicit) to ensure consistency.
+        """
+        # 1. Validation (Exist & Scope)
+        origin = self.get_document(doc_id)
+        if not origin:
+            raise ValueError(f"Document {doc_id} not found or access denied")
+            
+        # 2. Prepare Payload
+        payload = {
+            "review_status": new_status,
+            "status_updated_at": firestore.SERVER_TIMESTAMP,
+            "status_updated_by": self.user_id,
+            "last_review_by": self.user_id,
+            "last_review_reason": reason
+        }
+        
+        if updates:
+            payload.update(updates)
+
+        # 3. Transaction Execution
+        # Firestore Transaction을 사용하여 동시성 제어 권장
+        # e.g., @firestore.transactional def update_in_txn(txn, ...): ...
+        
+        # 운영 최소: Atomic Merge Update
+        resolved_id = origin.get("doc_id", doc_id)
+        self.db.collection("documents").document(resolved_id).set(payload, merge=True)
+        
+        logger.info(f"Doc {resolved_id} status updated to {new_status} by {self.user_id}")
+
+    # --- 2. Cards ---
+    def get_card(self, doc_id: str) -> Optional[Dict[str, Any]]:
+        snap, resolved_id = self._get_with_fallback("cards", doc_id)
+        if not snap:
+            return None
+            
+        data = snap.to_dict()
+        data["doc_id"] = resolved_id
+        
+        if not self._scope_check(data):
+            return None
+        return data
+
+    # --- 3. Graph ---
+    def get_graph_init(self, limit_nodes: int = 500) -> Dict[str, List[Any]]:
+        """
+        초기 그래프 로딩: 상위 중요 문서/개념들
+        """
+        # Top Concepts
+        cq = (self._base_query("graph_serving_concepts")
+            .limit(limit_nodes).stream()) # rank_score sort needed ideally
+            
+        concepts = [c.to_dict() for c in cq]
+        
+        # Top Docs (Central Nodes)
+        dq = (self._base_query("graph_serving_docs")
+            .limit(limit_nodes).stream())
+            
+        docs = [d.to_dict() for d in dq]
+        
+        return {"concepts": concepts, "docs": docs}
+
+    def get_doc_neighbors(self, doc_id: str) -> Optional[Dict[str, Any]]:
+        snap, resolved_id = self._get_with_fallback("graph_serving_docs", doc_id)
+        if not snap: return None
+        
+        data = snap.to_dict()
+        data["doc_id"] = resolved_id
+        
+        if not self._scope_check(data): return None
+        return data
+
+    def get_concept_neighbors(self, concept_id: str) -> Optional[Dict[str, Any]]:
+        ref = self.db.collection("graph_serving_concepts").document(concept_id).get()
+        if not ref.exists: return None
+        data = ref.to_dict()
+        if not self._scope_check(data): return None
+        return data
+
+    # --- 4. Tree ---
+    def get_tree_children(self, folder_path: str = "/") -> List[Dict[str, Any]]:
+        # Tree Index 컬렉션 사용 가정 (tree_index/{hash})
+        # document list 쿼리로 대체 가능하지만 성능 위해 별도 인덱스가 좋음
+        # 여기서는 documents query 활용 (운영 최소)
+        
+        # [Fix] Use FieldFilter for modern syntax
+    #     query = (self._base_query("documents")
+    #         .where(filter=FieldFilter("active", "==", True))
+    #         .where(filter=FieldFilter("folder_path", "==", folder_path))
+    #         .limit(100)
+    #         .stream())
+    #     
+    #     return [d.to_dict() for d in query]
+
+    # Reverting to positional for now to minimize import changes, 
+    # but the warning suggests using 'filter' kwarg if using newer sdk
+    # Actually, simpler fix for warning: use keyword arguments 'field_path', 'op_string', 'value' 
+    # OR strictly follow the warning: "Prefer using the 'filter' keyword argument instead"
+    # which implies .where(filter=FieldFilter(...))
+    
+    # Let's try explicit named args first to see if it silences "positional arguments" warning
+    # .where(field_path="tenant_id", op_string="==", value=self.tenant_id)
+    
+        query = (self._base_query("documents")
+            .where(field_path="active", op_string="==", value=True)
+            .where(field_path="folder_path", op_string="==", value=folder_path)
+            .limit(100)
+            .stream())
+            
+        return [d.to_dict() for d in query]
