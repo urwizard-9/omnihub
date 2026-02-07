@@ -29,6 +29,7 @@ class GraphServingIndexBuilder:
         
         # Cache
         self.valid_docs = set()
+        self.doc_meta = {} # doc_id -> title
         self.valid_concepts = set()
         self.concept_meta = {}
 
@@ -53,6 +54,14 @@ class GraphServingIndexBuilder:
                 continue
                 
             self.valid_docs.add(d.id)
+            
+            # [Fix] Title 정보 저장 (Profiles에서 가져오는 게 정확할 수 있으나 Documents에도 title이 있다고 가정)
+            # 만약 Documents에 title이 없다면 profiles를 조회해야 함.
+            # TreeIndexer 로직상 Documents에는 title이 없을 수도 있음 (ingestion 시점에).
+            # 일단 data.get("title") 시도하고, 없으면 fil_ 접두어로 Profiles 조회는 너무 무거움.
+            # 여기서는 Documents에 Title이 있다고 가정하고(Sync 로직에서 넣어줬어야 함), 없으면 doc_id 사용.
+            self.doc_meta[d.id] = data.get("title", d.id) 
+            
             count += 1
             
         logger.info(f"Valid Docs: {len(self.valid_docs)}")
@@ -133,6 +142,7 @@ class GraphServingIndexBuilder:
             
             payload = {
                 "doc_id": doc_id,
+                "title": self.doc_meta.get(doc_id, "Untitled"), # [Fix] Title 추가
                 "tenant_id": self.tenant_id,
                 "engagement_id": self.engagement_id,
                 "top_concepts": top_k,

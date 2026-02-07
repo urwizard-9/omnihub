@@ -1,91 +1,105 @@
-import os
 import sys
+import os
+import argparse
 from google.cloud import firestore
 from dotenv import load_dotenv
 
-# Load Env
-# 상위 디렉토리의 .env 로드 시도
-load_dotenv(os.path.join(os.path.dirname(__file__), '../../.env'))
-load_dotenv() # 현재 위치도 시도
+# .env 로드 (상위 폴더 포함 시도)
+base_path = os.path.dirname(os.path.abspath(__file__))
+backend_path = os.path.dirname(os.path.dirname(base_path)) # backend/
+load_dotenv(os.path.join(backend_path, '.env'))
 
-def check_status(file_id: str):
-    project_id = os.getenv("GCP_PROJECT_ID")
+def print_status(icon, name, status, details=""):
+    print(f"{icon} {name:<15}: {status:<15} {details}")
+
+def check_pipeline_status(doc_id: str):
+    project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("PROJECT_ID")
     if not project_id:
-        print("❌ Error: GCP_PROJECT_ID not found in environment variables.")
+        print("❌ Error: GCP_PROJECT_ID not set in environment.")
         return
 
-    print(f"📡 Connecting to Firestore (Project: {project_id})...")
-    try:
-        db = firestore.Client(project=project_id)
-        
-        print(f"🔍 Checking Document: {file_id}")
-        doc_ref = db.collection("files").document(file_id)
-        doc = doc_ref.get()
+    print(f"\n📡 Connecting to Firestore ({project_id})...")
+    db = firestore.Client(project=project_id)
+    
+    # Prefix 보정 (fil_ 접두사 확인)
+    if not doc_id.startswith("fil_"):
+        print(f"⚠️  Input ID '{doc_id}' does not start with 'fil_'. Checking directly...")
+    
+    print(f"\n🔍 [Pipeline Status Check] Doc ID: {doc_id}\n" + "="*60)
 
-        if doc.exists:
-            data = doc.to_dict()
-            print("\n" + "="*40)
-            print(f"📄 File Name       : {data.get('name', 'Unknown')}")
-            print(f"🆔 Doc ID          : {file_id}")
-            print(f"📊 Pipeline Status : {data.get('pipeline_status', 'Not started/Unknown')}")
-            print(f"🤖 AI Status       : {data.get('aiStatus', 'Unknown')}")
-            print("-" * 40)
-            
-            # Error Message
-            if data.get('pipeline_error'):
-                print(f"⚠️  ERROR DETAILS   : {data.get('pipeline_error')}")
-            
-            # Timestamp
-            updated_at = data.get('pipeline_updated_at')
-            if updated_at:
-                print(f"🕒 Last Updated    : {updated_at}")
-            
-            # Chunks Check (Top-level 'chunks' collection)
-            try:
-                chunk_meta_doc = db.collection("chunks").document(file_id).get()
-                if chunk_meta_doc.exists:
-                    cm = chunk_meta_doc.to_dict()
-                    c_count = cm.get("chunk_count", 0)
-                    print(f"🧩 Chunks Status   : ✅ Created (Count: {c_count})")
-                    print(f"📦 Chunks GCS URI  : {cm.get('gcs_chunks_uri', 'N/A')}")
-                else:
-                    print(f"🧩 Chunks Status   : ❌ Not found in 'chunks' collection")
-            except Exception as e:
-                print(f"🧩 Chunks Check    : Failed ({e})")
-            
-            # Profile Check
-            try:
-                profile_doc = db.collection("profiles").document(file_id).get()
-                if profile_doc.exists:
-                    p_data = profile_doc.to_dict()
-                    p_title = p_data.get("title", "N/A (Missing)")
-                    print(f"👤 Profile Title   : {p_title}")
-                else:
-                    print(f"👤 Profile Status  : ❌ Not found")
-            except Exception as e:
-                print(f"👤 Profile Check   : Failed ({e})")
+    # 1. Files (Ingestion)
+    file_ref = db.collection("files").document(doc_id).get()
+    if not file_ref.exists:
+        print(f"❌ Document {doc_id} NOT FOUND in 'files' collection.")
+        return
 
-            # Additional Info
-            print("-" * 40)
-            print(f"📂 Folder Path     : {data.get('folder_path', 'N/A')}")
-            print(f"🔗 GCS URI         : {data.get('gcs_uri', 'N/A')}")
-            print("="*40 + "\n")
-        else:
-            print(f"❌ Document {file_id} does not exist in Firestore 'files' collection.")
-            
-            # Prefix check hint
-            if not file_id.startswith("fil_"):
-                 print(f"💡 Hint: Try adding 'fil_' prefix -> fil_{file_id}")
+    f_data = file_ref.to_dict()
+    print_status("📄", "Files Info", f_data.get("status", "Unknown"), 
+                 f"(Name: {f_data.get('name')}, AI: {f_data.get('aiStatus')})")
 
-    except Exception as e:
-        print(f"❌ Failed to query Firestore: {e}")
+    # 2. DocAI 
+    docai_ref = db.collection("docai_results").document(doc_id).get()
+    if docai_ref.exists:
+        d_data = docai_ref.to_dict()
+        print_status("🤖", "DocAI Result", "Found", f"(Pages: {len(d_data.get('pages', []))})")
+    else:
+        print_status("🤖", "DocAI Result", "Missing", "")
+
+    # 3. Profiles
+    prof_ref = db.collection("profiles").document(doc_id).get()
+    if prof_ref.exists:
+        p_data = prof_ref.to_dict()
+        print_status("�", "Profile", "Found", f"(Active: {p_data.get('active')})")
+    else:
+        print_status("👤", "Profile", "Missing", "")
+
+    # 4. Chunks
+    chunk_ref = db.collection("chunks").document(doc_id).get()
+    if chunk_ref.exists:
+        c_data = chunk_ref.to_dict()
+        print_status("🧩", "Chunks", "Found", f"(Count: {c_data.get('chunk_count')})")
+    else:
+        print_status("🧩", "Chunks", "Missing", "")
+
+    # 5. Analysis (Parallel Steps)
+    # Policy
+    pol_ref = db.collection("policies").document(doc_id).get()
+    pol_status = "Found" if pol_ref.exists else "Missing"
+    print_status("🛡️", "Policy", pol_status, f"(Level: {pol_ref.to_dict().get('security_level') if pol_ref.exists else '-'})")
+
+    # Card
+    card_ref = db.collection("cards").document(doc_id).get()
+    card_status = "Found" if card_ref.exists else "Missing"
+    print_status("🃏", "Card Summary", card_status)
+
+    # Entities
+    ent_ref = db.collection("entities").document(doc_id).get()
+    ent_status = "Found" if ent_ref.exists else "Missing"
+    print_status("�", "Entities", ent_status, f"(Count: {ent_ref.to_dict().get('entity_count') if ent_ref.exists else '-'})")
+
+    # 6. Embeddings
+    emb_ref = db.collection("embeddings").document(doc_id).get()
+    emb_status = "Found" if emb_ref.exists else "Missing"
+    print_status("🧠", "Embeddings", emb_status)
+
+    # 7. Final Document (Vector Serving)
+    final_ref = db.collection("documents").document(doc_id).get()
+    if final_ref.exists:
+        final_data = final_ref.to_dict()
+        print_status("✅", "Serving Doc", "READY", f"(Updated: {final_data.get('updated_at')})")
+    else:
+        print_status("❌", "Serving Doc", "NOT READY", "(Final step missing)")
+
+    print("="*60 + "\n")
 
 if __name__ == "__main__":
-    # Default ID from recent logs
-    DEFAULT_ID = "fil_1U5U3yo5go0etcZ5KnDE5rpqkbYDw73Lc"
+    parser = argparse.ArgumentParser(description="Check RAG Pipeline Status for a Document")
+    parser.add_argument("doc_id", nargs="?", help="Document ID (e.g. fil_xxxxx)")
+    args = parser.parse_args()
     
-    target_id = DEFAULT_ID
-    if len(sys.argv) > 1:
-        target_id = sys.argv[1]
+    target_id = args.doc_id
+    if not target_id:
+        print("Usage: python check_pipeline_status.py <doc_id>")
+        sys.exit(1)
         
-    check_status(target_id)
+    check_pipeline_status(target_id)

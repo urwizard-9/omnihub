@@ -75,6 +75,12 @@ async def get_tree_items(
             f_enrich = f.copy()
             f_enrich["tenant_id"] = current_tenant
             f_enrich["engagement_id"] = current_engagement
+            # [Fix] Frontend expects 'name', but DB stores 'title'. Map it here.
+            f_enrich["name"] = f.get("title", f.get("name", "Untitled"))
+            
+            if len(candidates) == 0:
+                logger.info(f"[DEBUG-TREE] First Enrichment: {f_enrich}") # Debug log
+            
             candidates.append(f_enrich)
             
         filtered_files = PermissionGuard.filter_docs(auth_ctx, candidates)

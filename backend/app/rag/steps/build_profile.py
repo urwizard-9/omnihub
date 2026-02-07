@@ -81,7 +81,15 @@ class ProfileBuilder:
 
         # 타이틀 및 경로
         title = base_data.get("name", "Untitled")
-        folder_path = base_data.get("fullPath", "/")
+        full_path_raw = base_data.get("fullPath", "/")
+        # [Fix] Tree Indexer를 위해 파일명 제외하고 폴더 경로만 추출
+        # 예: /A/B/file.pdf -> /A/B
+        if "/" in full_path_raw:
+             folder_path = full_path_raw.rsplit('/', 1)[0]
+             if not folder_path: folder_path = "/" # /file.pdf -> empty -> /
+        else:
+             folder_path = "/"
+
         source_link = base_data.get("webViewLink", "")
         
         # 힌트 정보

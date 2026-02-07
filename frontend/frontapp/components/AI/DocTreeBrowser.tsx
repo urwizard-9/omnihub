@@ -34,6 +34,7 @@ const TreeNode: React.FC<{
                 setLoading(true);
                 try {
                     const res = await AIService.getTreeStructure(path);
+                    console.log("Tree Data for path:", path, res); // [Debug]
                     setData(res);
                 } catch (err) {
                     console.error(err);
@@ -76,17 +77,20 @@ const TreeNode: React.FC<{
                             onFileClick={onFileClick}
                         />
                     ))}
-                    {data.files?.map(f => (
-                        <TreeNode
-                            key={f.doc_id}
-                            path=""
-                            name={f.name}
-                            type="file"
-                            docId={f.doc_id}
-                            level={level + 1}
-                            onFileClick={onFileClick}
-                        />
-                    ))}
+                    {data.files?.map(f => {
+                        console.log("File Node:", f); // [Debug]
+                        return (
+                            <TreeNode
+                                key={f.doc_id}
+                                path=""
+                                name={f.name || (f as any).title || "Untitled"}
+                                type="file"
+                                docId={f.doc_id}
+                                level={level + 1}
+                                onFileClick={onFileClick}
+                            />
+                        );
+                    })}
                     {data.folders.length === 0 && data.files.length === 0 && (
                         <div className="py-1 px-4 text-xs text-slate-600 italic" style={{ paddingLeft: `${(level + 1) * 12 + 20}px` }}>
                             (Empty)

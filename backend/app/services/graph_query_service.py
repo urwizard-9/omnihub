@@ -42,46 +42,74 @@ class GraphQueryService:
         return filtered_nodes, filtered_edges
 
     def get_overview(self, limit: int = None) -> Dict[str, Any]:
-        """초기 그래프 로드 (Overview)"""
+        """초기 그래프 로드 (Concept-First Approach for Verified Edges)"""
         limit = limit or GRAPH_INIT_MAX_NODES
         data = self.repo.get_graph_init(limit_nodes=limit)
         
-        # Format Translation (Firestore -> Frontend Graph)
         nodes = []
-        edges = [] # init 단계에선 edges 생략 혹은 주요 엣지만?
+        edges = []
+        node_ids = set()
         
-        # Concepts to Nodes
+        # 1. Concepts를 중심으로 순회 (Top Concepts)
         for c in data.get("concepts", []):
+            cid = c.get("concept_id")
+            if cid in node_ids: continue
+            
+            # Concept Node 추가
             meta = c.get("meta", {})
             nodes.append({
-                "id": c.get("concept_id"),
-                "label": meta.get("name", c.get("concept_id")),
+                "id": cid,
+                "label": meta.get("name", cid),
                 "type": "concept",
                 "concept_type": meta.get("type", "OTHERS"),
-                "size": c.get("doc_count", 1)  # 시각화 사이즈용
+                "size": c.get("doc_count", 1)
             })
+            node_ids.add(cid)
+            
+            # 2. 해당 Concept에 연결된 Top Docs를 순회하여 Edge 생성
+            top_docs = c.get("top_docs", [])
+            for td in top_docs:
+                doc_id = td.get("doc_id")
+                
+                # Document Node 추가 (아직 없으면)
+                if doc_id not in node_ids:
+                    # [Note] top_docs 안에는 title 정보가 없을 수 있음 (Serving Index 빌드 시점에 따라)
+                    # 하지만 연결성을 위해 일단 노드는 생성해야 함.
+                    # Build 시점에 doc_meta가 추가되었다면 좋겠지만, 없으면 doc_id 사용.
+                    # repo.get_graph_init의 'docs' 리스트를 참조하면 Title을 알 수도 있음.
+                    nodes.append({
+                        "id": doc_id,
+                        "label": doc_id, # 임시로 ID 사용 (아래에서 보정)
+                        "type": "document",
+                        "size": 1
+                    })
+                    node_ids.add(doc_id)
+                
+                # Edge 추가 (Concept <-> Doc)
+                edges.append({
+                    "source": doc_id,  # Doc -> Concept
+                    "target": cid,
+                    "score": td.get("score", 0),
+                    "type": "mentions"
+                })
 
-            # Edge 추가 (Concept -> Top Docs)
-            # overview에서 엣지를 다 그리면 너무 많음. 상위 몇개만?
-            # 운영 최소: 엣지 없이 노드만 보내거나, 아주 강한 엣지만 포함
-            # 여기선 생략하고, 노드 클릭 시 expand 권장
-            
-        # Docs to Nodes
+        # 3. Title 보정 (data['docs']에 있는 정보 활용)
+        # Concept의 top_docs에는 title이 없을 수 있으므로, 별도로 가져온 docs 리스트에서 title을 찾아 매핑
+        doc_title_map = {}
         for d in data.get("docs", []):
-            nodes.append({
-                "id": d.get("doc_id"),
-                "label": d.get("doc_id"), # 제목이 있으면 좋음 (repo가 가져올 때 포함 필요)
-                "type": "document",
-                "size": d.get("concept_count", 1)
-            })
+            doc_title_map[d.get("doc_id")] = d.get("title", d.get("doc_id"))
             
+        for n in nodes:
+            if n["type"] == "document" and n["id"] in doc_title_map:
+                n["label"] = doc_title_map[n["id"]]
+
         # Permission Filter
         clean_nodes, clean_edges = self._apply_permissions(nodes, edges)
         
         return {
             "nodes": clean_nodes,
-            "edges": clean_edges,
-            "stats": {"node_count": len(clean_nodes), "edge_count": len(clean_edges)}
+            "links": clean_edges, # [Fix] Frontend expects 'links', not 'edges'
+            "stats": {"node_count": len(clean_nodes), "link_count": len(clean_edges)}
         }
 
     def expand_neighborhood(self, node_id: str, node_type: str, limit: int = 50) -> Dict[str, Any]:
@@ -137,5 +165,5 @@ class GraphQueryService:
         
         return {
             "nodes": clean_nodes,
-            "edges": clean_edges
+            "links": clean_edges
         }

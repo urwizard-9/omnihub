@@ -97,6 +97,7 @@ export interface GraphNode {
   id: string;
   label?: string;
   group?: string; // "document" or "concept"
+  type?: string; // [Fix] Added for compatibility
   [key: string]: any;
 }
 

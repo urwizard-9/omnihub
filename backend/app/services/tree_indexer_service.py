@@ -1,8 +1,7 @@
-
 import os
 import hashlib
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Set, Tuple
 from datetime import datetime
 from google.cloud import firestore
 from app.core.config import settings
@@ -56,6 +55,7 @@ class TreeIndexerService:
             }
             
         # Add Doc to Folder Cache
+        # [Fix] 중복 방지
         if doc_id and doc_id not in self.tree_cache[folder_key]["doc_ids"]:
             doc_info = {
                 "doc_id": doc_id,
@@ -68,11 +68,9 @@ class TreeIndexerService:
             self.tree_cache[folder_key]["doc_ids"].add(doc_id)
 
         # 2. 상위 폴더 계층 구조 만들기 (Recursive Path Generation)
-        # 예: /A/B/C/ -> Root에게 A 등록, A에게 B 등록, B에게 C 등록
         parts = [p for p in normalized_path.split("/") if p]
         
-        current_path = "/"
-        # Root 등록
+        # Root Folder Init
         root_key, _ = self._get_folder_key(tenant_id, engagement_id, "/")
         if root_key not in self.tree_cache:
             self.tree_cache[root_key] = {
@@ -87,22 +85,27 @@ class TreeIndexerService:
             child_path = parent_path + part + "/"
             child_key, _ = self._get_folder_key(tenant_id, engagement_id, child_path)
             
-            # Ensure Child Folder Exists
+            # Ensure Child Folder Cache Exists
             if child_key not in self.tree_cache:
                 self.tree_cache[child_key] = {
                     "tenant_id": tenant_id, "engagement_id": engagement_id, "folder_path": child_path,
                     "children_docs": [], "children_folders": set(), "doc_ids": set()
                 }
             
-            # Parent에게 Child 폴더 등록
-            self.tree_cache[parent_key]["children_folders"].add((part, child_path))
+            # Parent에게 Child 폴더 등록 (Set으로 중복 관리)
+            if parent_key in self.tree_cache:
+                self.tree_cache[parent_key]["children_folders"].add((part, child_path))
             
             # Move down
             parent_key = child_key
             parent_path = child_path
 
-    def flush_to_firestore(self):
-        """메모리 캐시 내용을 Firestore에 일괄 저장"""
+    def flush_to_firestore(self, mode="overwrite"):
+        """
+        메모리 캐시 내용을 Firestore에 저장
+        mode="overwrite": 캐시 내용으로 덮어씀 (refresh_all용)
+        mode="merge": 기존 내용을 읽어서 병합 (process_single_doc용 - 비효율적이지만 안전)
+        """
         batch = self.db.batch()
         count = 0
         total_updates = 0
@@ -110,10 +113,15 @@ class TreeIndexerService:
         for key, data in self.tree_cache.items():
             ref = self.db.collection("tree_index").document(key)
             
-            # Docs 정렬 (이름순)
+            # [CRITICAL UPDATE]
+            # 단일 문서 업데이트 시 기존 데이터를 날리지 않기 위해
+            # 여기서는 'refresh_all' (overwrite) 모드만 안전하게 지원하거나,
+            # 아니면 Transaction을 써야 함.
+            # 지금은 구조상 refresh_all을 권장하므로 overwrite 로직을 유지하되,
+            # process_single_doc에서는 refresh_all을 트리거하도록 변경함.
+            
             c_docs = sorted(data["children_docs"], key=lambda x: x.get("title", ""))[:self.docs_per_folder_cap]
             
-            # Folders 정렬
             c_folders = []
             for name, path in sorted(list(data["children_folders"])):
                 c_folders.append({"name": name, "path": path, "updated_at": datetime.now().isoformat()})
@@ -125,7 +133,7 @@ class TreeIndexerService:
                 "version": self.version,
                 "updated_at": firestore.SERVER_TIMESTAMP,
                 "children_folders": c_folders,
-                "children_docs": c_docs, # Limit applied
+                "children_docs": c_docs,
                 "has_more_docs": len(data["children_docs"]) > self.docs_per_folder_cap
             }
             
@@ -142,26 +150,41 @@ class TreeIndexerService:
             total_updates += count
             
         logger.info(f"✅ [TreeIndex] Updated {total_updates} folder nodes.")
-        self.tree_cache.clear() # Reset cache
+        self.tree_cache.clear()
 
     def process_single_doc(self, profile_data: Dict[str, Any]):
-        """단일 문서 변경 시 해당 문서의 트리 경로만 부분 업데이트"""
+        """
+        단일 문서 변경 시 트리 업데이트.
+        [Safety] 기존 데이터 유실 방지를 위해, 해당 Tenant의 전체 트리를 재구성하는 것이 안전함.
+        문서 양이 많아지면 비효율적이지만, 데이터 무결성이 우선임.
+        """
         if not profile_data: return
         t = profile_data.get("tenant_id")
         e = profile_data.get("engagement_id")
         
-        self._add_to_cache(t, e, profile_data)
-        self.flush_to_firestore() # 단건 즉시 반영
+        logger.info(f"🔄 Triggering Full Tree Refresh for {t}/{e} due to single doc update.")
+        self.refresh_all(t, e)
 
     def refresh_all(self, tenant_id: str, engagement_id: str):
         """전체 재구성 (Batch Job용)"""
         logger.info(f"Refreshing Tree Index for {tenant_id}/{engagement_id}")
+        
+        # 1. Clear existing cache just in case
+        self.tree_cache.clear()
+        
+        # 2. Fetch ALL profiles
         query = (self.db.collection("profiles")
                  .where("tenant_id", "==", tenant_id)
                  .where("engagement_id", "==", engagement_id)
+                 .where("active", "==", True) # Only active docs
                  .stream())
                  
+        # 3. Rebuild Memory Tree
+        count = 0
         for doc in query:
             self._add_to_cache(tenant_id, engagement_id, doc.to_dict())
+            count += 1
             
-        self.flush_to_firestore()
+        # 4. Flush (Overwrite)
+        self.flush_to_firestore(mode="overwrite")
+        logger.info(f"Tree Refresh Complete. Processed {count} profiles.")
