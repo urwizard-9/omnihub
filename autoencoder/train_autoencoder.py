@@ -1,5 +1,4 @@
 # src/autoencoder/train_autoencoder.py
-from xml.parsers.expat import model
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
@@ -79,6 +78,35 @@ def main():
 
     model, scaler, baseline = fit_autoencoder(data)
     save_artifacts(model, scaler, baseline)
+    
+    # GCS로 자동 업로드 (파이프라인 연동용 - 복구됨)
+    upload_artifacts_to_gcs()
+
+def upload_artifacts_to_gcs(bucket_name="aib-riskscore", source_dir="models", destination_blob_prefix="models"):
+    """
+    로컬 models/ 폴더의 파일들을 gs://aib-riskscore/models/ 로 업로드
+    """
+    try:
+        from google.cloud import storage
+        import os
+        
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        if not os.path.exists(source_dir):
+            print(f"[WARN] {source_dir} directory not found. Skipping upload.")
+            return
+
+        print(f"[UPLOAD] Starting upload from {source_dir} to gs://{bucket_name}/{destination_blob_prefix}...")
+        for filename in os.listdir(source_dir):
+            local_path = os.path.join(source_dir, filename)
+            if os.path.isfile(local_path):
+                blob_path = f"{destination_blob_prefix}/{filename}"
+                blob = bucket.blob(blob_path)
+                blob.upload_from_filename(local_path)
+                print(f" - Uploaded {filename}")
+        print("[SUCCESS] All model artifacts uploaded.")
+    except Exception as e:
+        print(f"[ERROR] Failed to upload to GCS: {e}")
 
 if __name__ == "__main__":
     main()
