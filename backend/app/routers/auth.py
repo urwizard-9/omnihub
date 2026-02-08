@@ -209,8 +209,11 @@ async def exchange_auth_code(data: GoogleAuthCode, background_tasks: BackgroundT
             }
         }
         
-        print(f"[DEBUG] Client ID loaded: {settings.GOOGLE_CLIENT_ID[:5]}...{settings.GOOGLE_CLIENT_ID[-5:]}")
-        print(f"[DEBUG] Client Secret loaded: {settings.GOOGLE_CLIENT_SECRET[:3]}... (len={len(settings.GOOGLE_CLIENT_SECRET)})")
+        # [DEBUG] Print config
+        print(f"[DEBUG] Auth Request Code: {data.code[:10]}...")
+        print(f"[DEBUG] Client Config ID: {client_config['web']['client_id']}")
+        print(f"[DEBUG] Client Config Secret: {client_config['web']['client_secret'][:5]}... ({len(client_config['web']['client_secret'])} chars)")
+        print(f"[DEBUG] Settings ID: {settings.GOOGLE_CLIENT_ID}")
         
         flow = Flow.from_client_config(
             client_config,
@@ -222,7 +225,16 @@ async def exchange_auth_code(data: GoogleAuthCode, background_tasks: BackgroundT
         print(f"[DEBUG] Using Redirect URI: {flow.redirect_uri}")
         
         # 2. Exchange Code
-        flow.fetch_token(code=data.code)
+        try:
+            flow.fetch_token(code=data.code)
+        except Exception as token_exc:
+            print(f"[ERROR] Token Exchange Failed: {token_exc}")
+            if hasattr(token_exc, 'description'):
+                print(f"[ERROR] Description: {token_exc.description}")
+            if hasattr(token_exc, 'oauth2_error'):
+                print(f"[ERROR] OAuth2 Error: {token_exc.oauth2_error}")
+            raise token_exc
+            
         credentials = flow.credentials
         
         # 3. Get User Info
@@ -236,7 +248,8 @@ async def exchange_auth_code(data: GoogleAuthCode, background_tasks: BackgroundT
              id_info = id_token.verify_oauth2_token(
                 credentials.id_token, 
                 google_requests.Request(), 
-                settings.GOOGLE_CLIENT_ID
+                settings.GOOGLE_CLIENT_ID,
+                clock_skew_in_seconds=10
              )
              email = id_info.get('email')
              name = id_info.get('name')

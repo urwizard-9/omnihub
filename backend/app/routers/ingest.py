@@ -20,7 +20,10 @@ from app.core.gcp_clients import get_firestore_client
 db = get_firestore_client() 
 
 from pydantic import BaseModel
-from typing import List, Any, Dict
+from typing import List, Any, Dict, Set # Added Set
+
+# Global reference pool for async tasks to prevent GC
+background_ai_tasks: Set = set()
 
 """
 ingest.py는 외부 요청을 처리하는 **관문(Router)**으로서, 불필요한 기능은 없습니다. 각 API가 존재하는 명확한 이유가 있습니다.
@@ -188,16 +191,45 @@ async def sync_folder_task(user: UserSchema, folder_id: str):
                 if ingest_result.get("status") == "skipped":
                     status_label = "skipped"
                     skipped_count += 1
+                    
+                    # [Fix] Check if AI analysis was missed for skipped files
+                    # (e.g. Previous sync crashed before AI trigger)
+                    file_id = f_item['id']
+                    try:
+                        doc_snap = db.collection('files').document(file_id).get()
+                        if doc_snap.exists:
+                            data = doc_snap.to_dict()
+                            # If AI is not done (even if stuck in processing), force trigger
+                            if data.get("aiStatus") != "completed":
+                                gcs_uri = data.get("gcsUri") or data.get("gcs_uri")
+                                mime_type = data.get("mimeType") or data.get("mime_type")
+                                
+                                if gcs_uri:
+                                    task = asyncio.create_task(trigger_analysis(
+                                        file_id=file_id,
+                                        gcs_uri=gcs_uri,
+                                        mime_type=mime_type
+                                    ))
+                                    background_ai_tasks.add(task)
+                                    task.add_done_callback(background_ai_tasks.discard)
+                                    print(f"[Sync-Task] Retry AI Analysis for skipped file {file_id}")
+                                    status_label = "skipped_retry_ai"
+                    except Exception as e:
+                        print(f"[Sync-Task] Failed to check AI status for skipped file: {e}")
+
                 else:
-                    # Trigger AI
+                     # Trigger AI
                     if ingest_result.get("status") != "error":
                          file_id = f_item['id']
-                         # [Integration Active]
-                         asyncio.create_task(trigger_analysis(
+                         # [Fix] Keep strong reference to background tasks to avoid GC
+                         task = asyncio.create_task(trigger_analysis(
                              file_id=file_id,
                              gcs_uri=ingest_result.get("gcs_uri"),
                              mime_type=ingest_result.get("mime_type")
                          ))
+                         background_ai_tasks.add(task)
+                         task.add_done_callback(background_ai_tasks.discard)
+                         
                          print(f"[Sync-Task] Triggered AI Analysis for {file_id}")
 
                 completion_entry = {

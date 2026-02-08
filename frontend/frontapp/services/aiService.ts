@@ -29,16 +29,16 @@ export const AIService = {
     },
 
     // 2. Graph Ops
-    getGraphInit: async (limit: number = 30): Promise<GraphData> => {
-        const res = await fetch(`${API_BASE_URL}/api/graph/init?limit=${limit}`, {
+    getGraphInit: async (limit: number = 50, mode: 'overview' | 'hybrid' = 'overview'): Promise<GraphData> => {
+        const res = await fetch(`${API_BASE_URL}/api/graph/init?limit=${limit}&mode=${mode}`, {
             headers: getHeaders()
         });
         if (!res.ok) throw new Error("Graph Init failed");
         return await res.json();
     },
 
-    expandGraph: async (nodeId: string, nodeType: 'document' | 'concept'): Promise<GraphData> => {
-        const res = await fetch(`${API_BASE_URL}/api/graph/expand?node_id=${nodeId}&node_type=${nodeType}`, {
+    expandGraph: async (nodeId: string, nodeType: 'document' | 'concept', docLimit: number = 15): Promise<GraphData> => {
+        const res = await fetch(`${API_BASE_URL}/api/graph/expand?node_id=${nodeId}&node_type=${nodeType}&doc_limit=${docLimit}`, {
             headers: getHeaders()
         });
         if (!res.ok) throw new Error("Graph Expand failed");

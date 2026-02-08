@@ -6,7 +6,7 @@ import { MessageSquare, FolderTree, Loader2 } from 'lucide-react';
 import RAGSearchPanel from './AI/RAGSearchPanel';
 import DocTreeBrowser from './AI/DocTreeBrowser';
 import KnowledgeGraph from './AI/KnowledgeGraph';
-import DocCardView from './AI/DocCardView';
+import DocDetailDrawer from './AI/DocDetailDrawer';
 import SyncQueuePanel from './SyncQueuePanel';
 
 type LeftTab = 'chat' | 'explorer';
@@ -108,14 +108,17 @@ const OmniHubTab: React.FC = () => {
                 {/* Default State: Show Graph Only when Ready or Mocked */}
                 {(aiStatus === 'completed' || aiStatus === 'idle') && (
                     <>
-                        <KnowledgeGraph />
+                        <KnowledgeGraph onDocClick={(id) => setSelectedDocId(id)} />
                     </>
                 )}
 
                 {/* Doc Detail Overlay */}
                 {selectedDocId && (
-                    <div className="absolute top-0 right-0 w-[450px] h-full shadow-2xl z-20 border-l border-white/10">
-                        <DocCardView docId={selectedDocId} onClose={() => setSelectedDocId(null)} />
+                    <div className="absolute top-0 right-0 w-[450px] h-full shadow-2xl z-20 border-l border-white/10 pointer-events-none">
+                        {/* pointer-events-none wrapper to let clicks pass through if needed, but Drawer has pointer-events-auto */}
+                        <div className="pointer-events-auto h-full">
+                            <DocDetailDrawer docId={selectedDocId} onClose={() => setSelectedDocId(null)} />
+                        </div>
                     </div>
                 )}
             </div>

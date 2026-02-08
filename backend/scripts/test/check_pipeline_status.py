@@ -84,11 +84,39 @@ def check_pipeline_status(doc_id: str):
 
     # 7. Final Document (Vector Serving)
     final_ref = db.collection("documents").document(doc_id).get()
+    is_ready = False
     if final_ref.exists:
         final_data = final_ref.to_dict()
+        top_concepts = final_data.get('top_concepts', [])
         print_status("✅", "Serving Doc", "READY", f"(Updated: {final_data.get('updated_at')})")
+        print_status("  ", "Top Concepts", f"{len(top_concepts)} items", f"(Sample: {top_concepts[0]['concept_name'] if top_concepts else '-'})")
+        is_ready = True
     else:
         print_status("❌", "Serving Doc", "NOT READY", "(Final step missing)")
+
+    # 8. Graph Pipeline Check
+    print("-" * 60)
+    print("🕸️  Graph Pipeline Status")
+    
+    # Graph Serving Doc
+    gs_doc_ref = db.collection("graph_serving_docs").document(doc_id).get()
+    if gs_doc_ref.exists:
+        gs_data = gs_doc_ref.to_dict()
+        print_status("🔹", "Graph Serving", "Found", f"(Title: {gs_data.get('title', '-')})")
+    else:
+        print_status("🔸", "Graph Serving", "Missing", "")
+        
+    # Edges Count
+    edges_query = db.collection("edges_doc_concept").where("doc_id", "==", doc_id).count()
+    edges_res = edges_query.get()
+    edge_count = int(edges_res[0][0].value)
+    
+    print_status("🔗", "Edges Count", f"{edge_count} edges", "(In edges_doc_concept)")
+    
+    if is_ready and edge_count > 0:
+         print("\n✨ Pipeline seems HEALTHY for this document.")
+    else:
+         print("\n⚠️  Pipeline incomplete or data missing.")
 
     print("="*60 + "\n")
 

@@ -22,7 +22,7 @@ if (-Not $env:GOOGLE_APPLICATION_CREDENTIALS) {
     if (Test-Path ".env") {
         Get-Content .env | ForEach-Object {
             if ($_ -match "^GOOGLE_APPLICATION_CREDENTIALS=(.*)") {
-                $env:GOOGLE_APPLICATION_CREDENTIALS = $matches[1]
+                $env:GOOGLE_APPLICATION_CREDENTIALS = $matches[1].Trim('"')
             }
         }
     }

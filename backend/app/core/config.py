@@ -1,5 +1,13 @@
 from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
+import os
+from pathlib import Path
+
+# Calculate .env path relative to this config.py file
+# config.py is in backend/app/core/, so we go up 2 levels to backend/
+_config_dir = Path(__file__).parent  # backend/app/core/
+_backend_dir = _config_dir.parent.parent  # backend/
+_env_file_path = _backend_dir / ".env"
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "OmniHub"
@@ -58,7 +66,23 @@ class Settings(BaseSettings):
     
     TOP_CONCEPTS_CAP: int = 50
     PER_DOC_CAP: int = 50
-
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    
+    # Graph Serving & Optimization
+    PER_DOC_TOP_CONCEPTS: int = 15 # Ranker Output Cap
+    GRAPH_SERVING_CAP: int = 20    # Serving API Cap
+    GRAPH_SERVING_ALLOWED_STATUSES: str = "APPROVED" # Comma sep string
+    MAX_PER_CONCEPT_TYPE: int = 5
+    
+    # Concept Co-occurrence
+    COOC_DOC_TOPK: int = 10
+    COOC_MIN_SHARED_DOCS: int = 2
+    COOC_MIN_WEIGHT: float = 1.0
+    COOC_NEIGHBOR_CAP: int = 20
+    
+    model_config = SettingsConfigDict(
+        env_file=str(_env_file_path),
+        env_file_encoding='utf-8',
+        extra="ignore"
+    )
 
 settings = Settings()

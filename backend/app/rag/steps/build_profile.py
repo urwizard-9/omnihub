@@ -157,8 +157,14 @@ class ProfileBuilder:
         # 5. 저장 (Profiles)
         self.db.collection("profiles").document(doc_id).set(profile, merge=True)
         
-        # 6. [Safety] Documents 컬렉션에도 Title 백업 (검색 엔진 Fallback용)
-        self.db.collection("documents").document(doc_id).set({"title": title}, merge=True)
+        # 6. [Critical] Documents 컬렉션에 Scope + Title 저장 (Graph Serving 필수)
+        self.db.collection("documents").document(doc_id).set({
+            "title": title,
+            "tenant_id": self.tenant_id,
+            "engagement_id": self.engagement_id,
+            "active": True,
+            "review_status": "APPROVED"  # Default for new docs
+        }, merge=True)
         
         logger.info(f"✅ [Profile] 생성 및 백업 완료: {doc_id}")
         

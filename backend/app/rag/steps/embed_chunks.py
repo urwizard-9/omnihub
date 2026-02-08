@@ -26,7 +26,7 @@ class ChunkEmbedder:
         vertexai.init(project=self.project_id, location=self.location)
         self.model_name = getattr(settings, "VERTEX_EMBED_MODEL", "text-embedding-004")
         self.model = TextEmbeddingModel.from_pretrained(self.model_name)
-        self.batch_size = 5 # Vertex limit consideration
+        self.batch_size = 20 # [Optimized] Increased from 5 to 20 for speed
 
     def embed_batch(self, texts):
         all_embeddings = []
@@ -51,6 +51,68 @@ class ChunkEmbedder:
         except Exception:
             return None
 
+    def _load_doc_entities(self, doc_id: str):
+        """Phase B-2에서 추출한 Entity/Relation 로드"""
+        try:
+            ent_meta = self.db.collection("entities").document(doc_id).get()
+            if not ent_meta.exists: return None
+            
+            gcs_uri = ent_meta.get("gcs_entities_uri")
+            if not gcs_uri: return None
+            
+            return self.load_json_from_gcs(gcs_uri)
+        except Exception as e:
+            logger.warning(f"Failed to load entities for context injection: {e}")
+            return None
+
+    def _inject_context(self, chunk_text: str, chunk_id: str, entities_data: dict) -> str:
+        """
+        [Indexing-Time Augmentation]
+        텍스트 뒤에 그래프 컨텍스트(관계/엔티티)를 주입하여 임베딩 품질 향상
+        """
+        if not entities_data: return chunk_text
+        
+        # 1. 해당 청크와 관련된 Relations 찾기
+        relevant_rels = [
+            r for r in entities_data.get("relations", []) 
+            if r.get("evidence_chunk_id") == chunk_id
+        ]
+        
+        # 2. 해당 청크와 관련된 Entities 찾기
+        # evidence 리스트 중 chunk_id가 일치하는 것이 있는 엔티티
+        relevant_ents = []
+        for ent in entities_data.get("entities", []):
+            for ev in ent.get("evidence", []):
+                if ev.get("chunk_id") == chunk_id:
+                    relevant_ents.append(ent)
+                    break 
+        
+        if not relevant_rels and not relevant_ents:
+            return chunk_text
+            
+        # 3. 컨텍스트 텍스트 구성
+        context_lines = []
+        
+        # Relations: (Subj) --[Pred]--> (Obj)
+        if relevant_rels:
+            rel_strs = []
+            for r in relevant_rels[:5]: # Top 5 only
+                rel_strs.append(f"({r.get('src')}) --[{r.get('rel_type')}]--> ({r.get('dst')})")
+            context_lines.append("* Relations: " + ", ".join(rel_strs))
+            
+        # Entities: Name (Type)
+        if relevant_ents:
+            ent_strs = []
+            for e in relevant_ents[:10]: # Top 10 only
+                ent_strs.append(f"{e.get('name')} ({e.get('type')})")
+            context_lines.append("* Entities: " + ", ".join(ent_strs))
+            
+        context_str = "\n".join(context_lines)
+        
+        # 4. Injection
+        # "Original Text \n\n [Graph Context] \n ..."
+        return f"{chunk_text}\n\n[Graph Context]\n{context_str}"
+
     def process_single_document(self, doc_id: str):
         profile_ref = self.db.collection("profiles").document(doc_id).get()
         if not profile_ref.exists: return
@@ -65,6 +127,9 @@ class ChunkEmbedder:
         chunks = self.load_json_from_gcs(chunks_meta.get("gcs_chunks_uri"))
         if not chunks: return
         
+        # [Feature] Load Graph Data for Context Injection
+        entities_data = self._load_doc_entities(doc_id)
+        
         policy_data = self.db.collection("policies").document(doc_id).get()
         policy = policy_data.to_dict() if policy_data.exists else {}
         
@@ -75,11 +140,16 @@ class ChunkEmbedder:
             chunk_text = c.get("text", "")
             if not chunk_text.strip(): continue
             
+            chunk_id = c.get("chunk_id")
+            
+            # [Feature] Inject Graph Context before embedding
+            augmented_text = self._inject_context(chunk_text, chunk_id, entities_data)
+            
             meta = {
                 "tenant_id": getattr(settings, "TENANT_ID", "default"),
                 "engagement_id": getattr(settings, "ENGAGEMENT_ID", "default"),
                 "doc_id": doc_id,
-                "chunk_id": c.get("chunk_id"),
+                "chunk_id": chunk_id,
                 "doc_content_hash": profile_data.get("doc_content_hash"),
                 "security_level": policy.get("security_level", "L1"),
                 "ssot_level": policy.get("ssot_level", "Draft"),
@@ -87,8 +157,10 @@ class ChunkEmbedder:
                 "source_uri": profile_data.get("gcs_uris", {}).get("raw_file"),
                 "chunk_type": c.get("type", "text")
             }
-            target_chunks.append({"meta": meta, "text": chunk_text})
-            texts_to_embed.append(chunk_text)
+            # Note: We embed augmented_text, but we might want to keep original text in metadata?
+            # Or just rely on chunks collection for original text.
+            target_chunks.append({"meta": meta, "text": chunk_text}) # Keep original for reference
+            texts_to_embed.append(augmented_text) # Embed AUGMENTED text
             
         if not texts_to_embed: return
         
@@ -131,4 +203,4 @@ class ChunkEmbedder:
             "process_flags": {"embeddings": False}
         }, merge=True)
         
-        logger.info(f"✅ [Embed] 임베딩 완료: {len(embedded_result)} vectors")
+        logger.info(f"✅ [Embed] 임베딩 완료: {len(embedded_result)} vectors (with Graph Context)")

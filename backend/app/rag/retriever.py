@@ -130,6 +130,11 @@ class Retriever:
             
         # Neighbors list of list (batch query support)
         result_candidates = neighbors[0] # Single query
+        logger.info(f"🔍 [Retriever] Vector Search Found: {len(result_candidates)} candidates")
+        
+        if not result_candidates:
+             logger.warning("🔍 [Retriever] No candidates returned from Index Endpoint.")
+             return []
         
         # 4. Post-Processing & Meta Injection
         final_chunks: List[Evidence] = []
@@ -165,6 +170,7 @@ class Retriever:
             # [Immediate Search Filtering] active=False check
             # Vector Index Update Delay를 보완하기 위해 메타에서 직접 체크
             if not doc_meta.get("active", True):
+                logger.info(f"Skipping {doc_id}: Not active")
                 continue
             
             # Review Status Check (Optional but safe)

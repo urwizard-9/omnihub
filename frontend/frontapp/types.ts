@@ -96,15 +96,19 @@ export interface RAGRequest {
 export interface GraphNode {
   id: string;
   label?: string;
-  group?: string; // "document" or "concept"
-  type?: string; // [Fix] Added for compatibility
+  group?: 'document' | 'concept'; // Main Category
+  type?: string; // Sub Category (e.g. "PERSON", "ORG", or "pdf")
+  val?: number; // Size/Weight
+  mentions?: number;
   [key: string]: any;
 }
 
 export interface GraphLink {
   source: string;
   target: string;
-  value?: number;
+  value?: number; // Default weight
+  rank_score?: number; // TF-IDF Score
+  edge_label?: string; // Relationship label
 }
 
 export interface GraphData {
@@ -153,6 +157,7 @@ export interface DocCard {
   keywords?: string[];
   entities?: string[];
   sentiment?: string;
+  evidence?: Array<{ snippet: string; page: number; }>;
 }
 
 export interface DriveFile {

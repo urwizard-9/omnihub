@@ -158,12 +158,16 @@ class DocChunker:
         chunks_gcs_uri = f"gs://{self.bucket_name}/{chunks_blob_path}"
         
         # Firestore Update (Top-level meta)
+        # [Fix] Inherit Metadata for Scope Filter
         self.db.collection("chunks").document(doc_id).set({
             "doc_id": doc_id,
             "doc_content_hash": content_hash,
             "gcs_chunks_uri": chunks_gcs_uri,
             "chunk_count": len(all_chunks),
-            "created_at": firestore.SERVER_TIMESTAMP
+            "created_at": firestore.SERVER_TIMESTAMP,
+            "active": profile_data.get("active", True),
+            "tenant_id": profile_data.get("tenant_id", "default"),
+            "engagement_id": profile_data.get("engagement_id", "default")
         }, merge=True)
         
         # Flag Off

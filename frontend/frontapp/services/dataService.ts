@@ -40,6 +40,7 @@ export const extractVersionMeta = (fileName: string): VersionMeta => {
 };
 
 export const computeGroupKey = (fileName: string): string => {
+    if (!fileName) return "untitled";
     let base = fileName.replace(/\.[^/.]+$/, "");
     base = base.replace(REGEX_BRACKET_PREFIX, "");
     base = base.replace(REGEX_DATE_PREFIX, "");
@@ -174,11 +175,12 @@ export const getTopTags = (docs: DocRecord[]): string[] => {
 // Production (Cloud Run): 'https://omnihub-backend-707724932002.asia-northeast3.run.app'
 // If accessing via 172.24..., we must call backend at 172.24... too to avoid CORS/Mixed issues sometimes.
 const getBaseUrl = () => {
-    // 1. Local Development (runs against local backend by default, unless commented out)
+    // 1. Local Development (runs against local backend)
     if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-        // If you want to test against Cloud Run from localhost, uncomment the return below:
-        return 'https://omnihub-backend-707724932002.asia-northeast3.run.app';
-        // return 'http://localhost:8000';
+        // Use local backend for development
+        return 'http://localhost:8000';
+        // If you want to test against Cloud Run from localhost, use:
+        // return 'https://omnihub-backend-707724932002.asia-northeast3.run.app';
     }
 
     // 2. Production / Deployed (Must point to Cloud Run)

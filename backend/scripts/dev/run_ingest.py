@@ -29,7 +29,7 @@ def main():
         name="Watcher Bot",
         display_name="Watcher Bot", # 필수 필드 (displayName alias)
         google_access_token="dummy_for_sa_test", # 중요: SA 사용 트리거
-        department_id="dept_test"
+        department_id="DEPT_MGT"
     )
 
     try:

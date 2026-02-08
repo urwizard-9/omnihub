@@ -189,15 +189,24 @@ class FirestoreRepo:
         """
         # Top Concepts
         cq = (self._base_query("graph_serving_concepts")
-            .limit(limit_nodes).stream()) # rank_score sort needed ideally
-            
-        concepts = [c.to_dict() for c in cq]
+            .limit(limit_nodes).stream())
+        
+        # [Fix] 문서 ID를 명시적으로 추가 (to_dict()는 ID 미포함)
+        concepts = []
+        for c in cq:
+            data = c.to_dict()
+            data["concept_id"] = data.get("concept_id") or c.id  # Fallback to doc ID
+            concepts.append(data)
         
         # Top Docs (Central Nodes)
         dq = (self._base_query("graph_serving_docs")
             .limit(limit_nodes).stream())
-            
-        docs = [d.to_dict() for d in dq]
+        
+        docs = []
+        for d in dq:
+            data = d.to_dict()
+            data["doc_id"] = data.get("doc_id") or d.id  # Fallback to doc ID
+            docs.append(data)
         
         return {"concepts": concepts, "docs": docs}
 

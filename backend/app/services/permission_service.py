@@ -104,22 +104,80 @@ class PermissionGuard:
     @classmethod
     def filter_graph_payload(cls, auth_ctx: AuthContext, nodes: List[Dict], edges: List[Dict]) -> Dict[str, List]:
         """
-        Filter Graph Nodes & Edges
-        """
-        allowed_Nodes = cls.filter_docs(auth_ctx, nodes)
-        allowed_ids = {n.get("id") for n in allowed_Nodes} # Node ID set
+        Filter Graph Nodes & Edges preventing data leakage.
         
-        # Filter Edges
+        Strategy:
+        1. Filter 'document' nodes based on permissions.
+        2. Keep 'concept' nodes ONLY if they are connected to at least one visible document.
+           (This prevents leaking concepts that solely belong to restricted documents)
+        3. Filter 'edges' where both endpoints are visible.
+        """
+        doc_nodes = []
+        concept_nodes = []
+        other_nodes = []
+        
+        # 1. Separate Nodes by Type (GraphQueryService uses "group": "document" or "concept")
+        # Fallback to "type" if "group" is missing.
+        for node in nodes:
+            ntype = node.get("group", node.get("type", "unknown"))
+            if ntype == "document":
+                doc_nodes.append(node)
+            elif ntype == "concept":
+                concept_nodes.append(node)
+            else:
+                other_nodes.append(node)
+                
+        # 2. Filter Document Nodes (Strict Permission Check)
+        # Note: doc nodes from GraphService usually strictly follow document schema or are valid doc objects.
+        # But filter_docs expects specific fields (tenant_id, etc.).
+        # If GraphService returns simplified nodes, we might need to ensure fields exist.
+        # Assuming GraphService returns full doc info or enough for checks.
+        
+        # Admin can see all, but scope check is still needed? 
+        # filter_docs handles scope check internally.
+        allowed_doc_nodes = cls.filter_docs(auth_ctx, doc_nodes)
+        allowed_doc_ids = {n.get("id") for n in allowed_doc_nodes}
+        
+        # 3. Filter Concept Nodes based on Visibility (Leakage Prevention)
+        # Identify concepts connected to Allowed Docs
+        visible_concept_ids = set()
+        
+        for edge in edges:
+            src = edge.get("source")
+            tgt = edge.get("target")
+            
+            # Check Connections
+            # Case A: Doc -> Concept
+            if src in allowed_doc_ids:
+                visible_concept_ids.add(tgt)
+            # Case B: Concept -> Doc
+            if tgt in allowed_doc_ids:
+                visible_concept_ids.add(src)
+                
+        # Filter concepts
+        allowed_concept_nodes = []
+        for c_node in concept_nodes:
+            # Concepts usually don't have tenant/engagement fields in the node payload directly 
+            # if they come from graph_serving_concepts (which aggregates).
+            # But checking connection visibility is safer for leakage prevention.
+            # However, if concept is global (shared), is it safe?
+            # Yes, if it's connected to a visible doc, user has context to see it.
+            if c_node.get("id") in visible_concept_ids:
+                allowed_concept_nodes.append(c_node)
+        
+        # 4. Filter Edges
+        final_allowed_nodes = allowed_doc_nodes + allowed_concept_nodes + other_nodes
+        final_node_ids = {n.get("id") for n in final_allowed_nodes}
+        
         allowed_edges = []
         for edge in edges:
-            # Edge connects two nodes. Strict: Both nodes must be visible.
-            source = edge.get("source")
-            target = edge.get("target")
-            
-            if source in allowed_ids and target in allowed_ids:
+            if edge.get("source") in final_node_ids and edge.get("target") in final_node_ids:
                 allowed_edges.append(edge)
                 
-        return {"nodes": allowed_Nodes, "edges": allowed_edges}
+        return {
+            "nodes": final_allowed_nodes, 
+            "edges": allowed_edges
+        }
 
     @classmethod
     def ensure_download_allowed(cls, auth_ctx: AuthContext, doc: Dict[str, Any]):
@@ -127,7 +185,8 @@ class PermissionGuard:
         Check if file download is permitted.
         """
         # 1. Basic Access Check first (View 권한 선행)
-        cls.ensure_doc_access(auth_ctx, doc)
+        if not cls.ensure_doc_access(auth_ctx, doc): # ensure_doc_access raises, but returns True on success
+             return False
         
         # 2. Strict Download Policy for High Security
         sec_level = SecurityLevel.normalize(doc.get("security_level")).value

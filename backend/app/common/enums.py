@@ -35,6 +35,7 @@ class ReviewStatus(str, Enum):
     APPROVED = "APPROVED"
     PENDING = "PENDING"
     REJECTED = "REJECTED"
+    ARCHIVED = "ARCHIVED"
 
     @classmethod
     def normalize(cls, value: str) -> "ReviewStatus":
@@ -45,5 +46,7 @@ class ReviewStatus(str, Enum):
             return cls.APPROVED
         if v == "REJECTED": 
             return cls.REJECTED
+        if v == "ARCHIVED":
+            return cls.ARCHIVED
         # DRAFT, PENDING, or others -> PENDING
         return cls.PENDING

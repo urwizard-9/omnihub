@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 # Step Imports
 from app.rag.steps.run_docai_extract import DocAIExtractor
+from app.rag.steps.run_excel_extract import ExcelExtractor # [New]
 from app.rag.steps.build_profile import ProfileBuilder
 from app.rag.steps.split_and_chunk import DocChunker
 from app.rag.steps.classify_doc_policy import PolicyClassifier
@@ -45,16 +46,35 @@ class PipelineOrchestrator:
     """
     RAG 파이프라인의 전체 실행 흐름을 관리하는 오케스트레이터.
     
-    Pipeline Structure:
-    ==================
+    Pipeline Structure (v2.1 - Updated 2026-02):
+    =============================================
     
     [Phase B - Sequential]
-    ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
-    │  1. DocAI   │──▶│  2. Profile │──▶│  3. Chunk   │
-    │  (Extract)  │   │ (Normalize) │   │  (Split)    │
-    └─────────────┘   └─────────────┘   └─────────────┘
-                                               │
-                                               ▼
+    ┌──────────────────────────────────────┐
+    │          1. Extract (DocAI/Excel)    │
+    │  ┌─────────────┐   ┌─────────────┐   │
+    │  │  PDF/Image  │   │   Excel     │   │  ← MIME Type 분기
+    │  │   (DocAI)   │   │  (Local)    │   │
+    │  └──────┬──────┘   └──────┬──────┘   │
+    │         └────────┬────────┘          │
+    └──────────────────┼───────────────────┘
+                       ▼
+              ┌─────────────┐
+              │  2. Profile │
+              │ (Normalize) │
+              └──────┬──────┘
+                     ▼
+              ┌─────────────┐
+              │ 2.5 Tree    │  ← On-the-fly Index Update
+              │   (Index)   │
+              └──────┬──────┘
+                     ▼
+              ┌─────────────┐
+              │  3. Chunk   │
+              │  (Split)    │
+              └──────┬──────┘
+                     │
+                     ▼
     [Phase B-2 - Parallel + Merge]
     ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
     │  4. Policy  │   │  5. Summary │   │ 6. Entity   │  (Parallel)
@@ -99,6 +119,7 @@ class PipelineOrchestrator:
         
         # Phase B - Sequential Steps
         self.docai = DocAIExtractor()
+        self.excel_extractor = ExcelExtractor() # [New]
         self.profiler = ProfileBuilder()
         self.chunker = DocChunker()
         
@@ -122,8 +143,17 @@ class PipelineOrchestrator:
         # Additional Services
         self.tree_indexer = TreeIndexerService()
         
-        # Thread Pool for parallel execution
-        self.executor = ThreadPoolExecutor(max_workers=4)
+        # Thread Pools for parallel execution
+        # [Concurrency] Separate Executors
+        # 1. DocAI Executor (I/O Bound, API Limit Sensitive)
+        # Limit to 4 Concurrent Requests to avoid 429 Quota Exceeded (Default Limit: 5)
+        self.docai_executor = ThreadPoolExecutor(max_workers=4)
+        
+        # 2. General Executor (CPU/Memory Bound or High-Quota APIs)
+        # Used for Excel extraction, Profiling, Chunking, etc.
+        # Increased to 16 for better throughput on non-blocking tasks.
+        # This ensures once a doc passes step 1, it flows quickly through the rest.
+        self.general_executor = ThreadPoolExecutor(max_workers=16)
 
     async def run_pipeline(self, file_id: str, gcs_uri: str = None, mime_type: str = None):
         """
@@ -175,26 +205,35 @@ class PipelineOrchestrator:
         """
         logger.info(f"📦 [Phase B] Sequential Processing Start")
         
-        # Step 1: Document AI Extraction
+        # Step 1: Document AI Extraction or Excel Extraction
         if gcs_uri and mime_type:
-            logger.info(f"  → Step 1: DocAI Extraction")
-            await self._run_in_executor(
-                self.docai.process_single_document, 
-                file_id, gcs_uri, mime_type
-            )
+            # Excel Processing (CPU Bound -> general_executor)
+            if any(ext in mime_type for ext in ["spreadsheet", "excel"]):
+                logger.info(f"  → Step 1: Excel Extraction (Local)")
+                await self._run_in_general_executor(
+                    self.excel_extractor.process_single_document,
+                    file_id, gcs_uri, mime_type
+                )
+            # PDF/Image Processing (API Bound -> docai_executor)
+            else:
+                logger.info(f"  → Step 1: DocAI Extraction")
+                await self._run_in_docai_executor(
+                    self.docai.process_single_document, 
+                    file_id, gcs_uri, mime_type
+                )
         else:
-            logger.info(f"  → Step 1: Skip DocAI (No GCS URI)")
+            logger.info(f"  → Step 1: Skip Extraction (No GCS URI)")
         
         # Step 2: Profile Build (Normalize)
         logger.info(f"  → Step 2: Build Profile (Normalize)")
-        await self._run_in_executor(self.profiler.process_single_document, file_id)
+        await self._run_in_general_executor(self.profiler.process_single_document, file_id)
         
         # Step 2.5: Update Tree Index (On-the-fly)
         await self._update_tree_index(file_id)
         
         # Step 3: Split & Chunk
         logger.info(f"  → Step 3: Split & Chunk")
-        await self._run_in_executor(self.chunker.process_single_document, file_id)
+        await self._run_in_general_executor(self.chunker.process_single_document, file_id)
         
         logger.info(f"📦 [Phase B] Sequential Processing Complete")
 
@@ -325,13 +364,19 @@ class PipelineOrchestrator:
     # =============================================
     # Helper Methods
     # =============================================
-    async def _run_in_executor(self, func, *args):
-        """
-        동기 함수를 비동기 컨텍스트에서 실행
-        ThreadPoolExecutor를 사용하여 블로킹 방지
-        """
+    async def _run_in_docai_executor(self, func, *args):
+        """DocAI 전용 Executor 실행"""
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(self.executor, func, *args)
+        return await loop.run_in_executor(self.docai_executor, func, *args)
+
+    async def _run_in_general_executor(self, func, *args):
+        """일반 작업용 Executor 실행"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(self.general_executor, func, *args)
+
+    # Legacy alias for backward compatibility (if any)
+    async def _run_in_executor(self, func, *args):
+        return await self._run_in_general_executor(func, *args)
 
     async def _update_tree_index(self, file_id: str):
         """Tree Index 업데이트 (프로필 생성 후)"""

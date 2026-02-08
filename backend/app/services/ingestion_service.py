@@ -12,6 +12,7 @@ from app.utils.id_utils import to_internal_id # [Fixed] Centralized Utility
 
 from app.services.log_service import log_user_action 
 from app.models.log import ActionType 
+from app.core.config import settings 
 
 def get_db():
     return get_firestore_client()
@@ -109,6 +110,11 @@ def process_and_catalog_file(
             # Status Flags
             "status": "synced",
             "aiStatus": "pending",
+            
+            # [Fix] Add Scope & Active Flags for RAG Pipeline
+            "active": True,
+            "tenant_id": getattr(settings, "TENANT_ID", "default"),
+            "engagement_id": getattr(settings, "ENGAGEMENT_ID", "default"),
             
             "isFolder": False,
             "trashed": meta.get("trashed", False),

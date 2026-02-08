@@ -59,6 +59,7 @@ interface OmniHubContextType {
     securityState: SecurityState;
     riskHistory: { time: string, score: number }[];
     resetSecurity: () => void;
+    reportSecurityEvent: (action: 'DOWNLOAD' | 'APPROVE' | 'MOVE' | 'ACCESS_DENIED' | 'BLOCK_ATTEMPT' | 'ACCESS_ATTEMPT' | 'MFA_SUCCESS', details?: string) => void;
 
     // Upload Queue (Unified)
     uploadQueue: UploadItem[];
@@ -362,7 +363,9 @@ export const OmniHubProvider: React.FC<{ children: React.ReactNode }> = ({ child
         // AI Loading
         // AI Loading
         aiStatus, setPollingFolderId, syncStatusData,
-        uploadQueue, addUpload, removeUpload, updateUploadStatus
+        uploadQueue, addUpload, removeUpload, updateUploadStatus,
+        isSyncLocked: uploadQueue.some(item => item.status === 'processing' || item.status === 'pending'),
+        lastProcessedFile: null
     }), [
         activeTab, currentRole, isDataReady, isGlobalLoading, globalError, isAuthenticated, userProfile,
         token, docs, concepts, logs, securityState, riskHistory,

@@ -2,6 +2,7 @@ import json
 import logging
 import time
 import os
+import re
 import vertexai
 from vertexai.generative_models import GenerativeModel
 from google.cloud import storage
@@ -29,8 +30,6 @@ class EntityExtractor:
         self.model = GenerativeModel(model_name)
         
         # Config (Types)
-        # TODO: Load from file if exists, else default
-        # Config (Types)
         # Load rules from text file
         self.types = ["PERSON", "ORGANIZATION", "LOCATION", "EVENT", "CONCEPT", "PRODUCT", "TECHNOLOGY"]
         types_file = os.path.join("app", "rag", "rules", "entity_types.txt")
@@ -47,12 +46,29 @@ class EntityExtractor:
             logger.warning(f"Entity types file not found at {types_file}. Using defaults.")
         self.types_str = ", ".join(self.types)
 
+        # Load Stopwords
+        self.stopwords = set()
+        stopwords_file = os.path.join("app", "rag", "rules", "stopwords.txt")
+        if os.path.exists(stopwords_file):
+            try:
+                with open(stopwords_file, "r", encoding="utf-8") as f:
+                    self.stopwords = {line.strip() for line in f if line.strip()}
+                logger.info(f"Loaded {len(self.stopwords)} stopwords from {stopwords_file}")
+            except Exception as e:
+                logger.warning(f"Failed to load stopwords: {e}")
+
     def extract(self, text: str):
         prompt = f"""
         You are an advanced Information Extraction system.
         Extract meaningful Entities and Relations from the following text based on the allowed types.
         
         Allowed Entity Types: {self.types_str}
+        
+        [EXCLUSION RULES - STRICTLY ENFORCE]
+        1. **Common Dates**: Do NOT extract simple dates like "2024년", "1월", "오늘", "내일". (Only extract specific historical events).
+        2. **Legal Jargon**: Do NOT extract generic legal terms like "갑", "을", "병", "제1조", "본 계약", "당사자", "상기", "이하".
+        3. **Pronouns**: Do NOT extract pronouns like "그", "이것", "저것", "본인".
+        4. **Generic Terms**: Do NOT extract very common words that are not specific entities (e.g., "사람", "내용", "사항").
         
         Format Requirements:
         - Output Must be valid JSON.
@@ -89,6 +105,82 @@ class EntityExtractor:
         except Exception:
             return []
 
+    def _normalize_name(self, name: str) -> str:
+        """
+        정규화: 소문자, 양옆 공백 제거, 구두점 제거 등 (build_concepts와 일관성 유지)
+        """
+        if not name: return ""
+        # 소문자 변환 및 양옆 공백 제거
+        norm = name.lower().strip()
+        # 구두점 제거 (알파벳, 숫자, 공백, 한글 등은 유지하고 특수문자 제거)
+        # 여기서는 단순하게 build_concepts의 로직을 따르되 좀 더 안전하게 처리
+        norm = re.sub(r'[^\w\s]', '', norm) 
+        # 연속된 공백을 하나로
+        norm = re.sub(r'\s+', ' ', norm)
+        return norm.strip()
+
+    def _is_valid_entity(self, name: str) -> bool:
+        """후처리 필터: 불용어, 날짜 패턴, 길이 제한 등"""
+        if not name: return False
+        
+        # 1. 길이 제한 (2글자 미만 제외, 단 영문 대문자 약어 등은 예외일 수 있으나 일단 엄격하게)
+        # 한글 1글자("갑", "을", "법") 제외가 목적. 영문 "AI" 같은건 2글자라 통과.
+        if len(name) < 2: return False
+        
+        # 2. Stopwords
+        if name in self.stopwords: return False
+        
+        # 3. 정규식 필터
+        # 숫자만 있는 경우 ("123", "2024")
+        if re.match(r'^\d+$', name): return False
+        # 연도/월/일 패턴 ("2024년", "1월", "30일")
+        if re.match(r'^\d{2,4}년$', name): return False
+        if re.match(r'^\d{1,2}월$', name): return False
+        if re.match(r'^\d{1,2}일$', name): return False
+        # 제N조 패턴
+        if re.match(r'^제\d+조$', name): return False
+        
+        return True
+
+    def _select_representative_chunks(self, chunks: list, limit: int = 5) -> list:
+        """
+        LLM 비용 효율성을 고려한 전략적 청크 선택
+        (1) 문서 앞 1개
+        (2) 문서 중간 1개
+        (3) 문서 끝 1개
+        (4) 길이가 긴 청크 1~2개
+        (5) 표/리스트로 추정되는 청크 1개 (Optional)
+        """
+        text_chunks = [c for c in chunks if c.get("type", "text") == "text"]
+        if not text_chunks: return []
+        
+        n = len(text_chunks)
+        if n <= limit: return text_chunks
+
+        selected_indices = set()
+        
+        # (1) Start
+        selected_indices.add(0)
+        
+        # (2) Mid
+        if n > 2:
+            selected_indices.add(n // 2)
+            
+        # (3) End
+        selected_indices.add(n - 1)
+        
+        # (4) Longest (남은 자리만큼)
+        # 이미 선택된 것 제외하고 길이순 정렬
+        remaining_indices = [i for i in range(n) if i not in selected_indices]
+        sorted_by_len = sorted(remaining_indices, key=lambda i: len(text_chunks[i].get("text", "")), reverse=True)
+        
+        slots_left = limit - len(selected_indices)
+        for i in range(min(slots_left, len(sorted_by_len))):
+            selected_indices.add(sorted_by_len[i])
+            
+        # 인덱스 순으로 정렬하여 반환
+        return [text_chunks[i] for i in sorted(list(selected_indices))]
+
     def process_single_document(self, doc_id: str):
         profile_ref = self.db.collection("profiles").document(doc_id).get()
         if not profile_ref.exists: return
@@ -103,15 +195,12 @@ class EntityExtractor:
         chunks = self.load_chunks(chunk_ref.get("gcs_chunks_uri"))
         if not chunks: return
 
-        # Selection Strategy (Simpler version)
-        # Top 5 text chunks
-        text_chunks = [c for c in chunks if c.get("type", "text") == "text"]
-        target_chunks = text_chunks[:5]
+        # Selection Strategy (Improved)
+        target_chunks = self._select_representative_chunks(chunks, limit=5)
         
         if not target_chunks: return
         
         # [Parallel Extraction]
-        # 병렬 처리로 속도 개선 (기존: 텍스트 병합 후 1회 호출 -> 변경: 5개 청크 동시 호출)
         import concurrent.futures
         
         final_entities = []
@@ -126,7 +215,6 @@ class EntityExtractor:
             return self.extract(text)
 
         # ThreadPoolExecutor를 사용해 병렬 LLM 호출 (IO Bound)
-        # max_workers=5: 적절한 동시성을 유지하며 Rate Limit 방지
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             # Future와 Chunk 매핑
             future_to_chunk = {executor.submit(_process_chunk, c): c for c in target_chunks}
@@ -134,22 +222,46 @@ class EntityExtractor:
             for future in concurrent.futures.as_completed(future_to_chunk):
                 chunk_data = future_to_chunk[future]
                 try:
-                    extracted = future.result()
-                    if not extracted: continue
+                    result = future.result()
+                    if not result: continue
+                    
+                    # A. Snippet 생성 (실제 텍스트 기반)
+                    chunk_text = chunk_data.get("text", "")
+                    # 앞부분 300자 정도, 줄바꿈 정리
+                    snippet_raw = chunk_text[:300].replace("\n", " ")
+                    snippet = f"{snippet_raw}..." if len(chunk_text) > 300 else snippet_raw
                     
                     # 결과 병합 및 증거(Evidence) 매핑
-                    for ent in extracted.get("entities", []):
+                    for ent in result.get("entities", []):
+                        # [Defense] LLM이 문자열 리스트로 반환하는 경우 처리
+                        if isinstance(ent, str):
+                            ent = {"name": ent, "type": "OTHERS", "aliases": []}
+                        
+                        if not isinstance(ent, dict): continue
+
+                        # B. 정규화 키 추가
+                        name = ent.get("name", "")
+                        
+                        # [NEW] 후처리 필터 적용
+                        if not self._is_valid_entity(name):
+                            continue
+                            
+                        norm_name = self._normalize_name(name)
+                        ent["normalized_name"] = norm_name
+                        ent["concept_key"] = f"{ent.get('type', 'UNKNOWN')}:{norm_name}"
+                        ent["mention_count"] = 1 # 기본 1, 추후 merge시 합산 가능
+
                         ent["evidence"] = [{
                             "doc_id": doc_id,
                             "chunk_id": chunk_data.get("chunk_id"),
                             "page": chunk_data.get("page_start_no"),
                             "source_link": source_link,
-                            "snippet": "Extracted from chunk context",
+                            "snippet": snippet, # [Fix] 실제 텍스트 사용
                             "span": None
                         }]
                         final_entities.append(ent)
                         
-                    for rel in extracted.get("relations", []):
+                    for rel in result.get("relations", []):
                         rel["evidence_chunk_id"] = chunk_data.get("chunk_id")
                         all_relations.append(rel)
                         

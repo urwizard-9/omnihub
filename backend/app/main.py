@@ -1,3 +1,7 @@
+# Load environment variables FIRST before any other imports
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI
 from app.routers import (
     files, drive_webhook, auth, admin, ingest, 
