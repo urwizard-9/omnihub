@@ -19,7 +19,7 @@ const OmniHubTab: React.FC = () => {
     return (
         <div className="flex flex-1 overflow-hidden relative">
             {/* Left Panel */}
-            <div className="w-[360px] shrink-0 bg-[#13141F] border-r border-white/5 flex flex-col z-10 shadow-2xl relative">
+            <div className="w-[450px] shrink-0 bg-[#13141F] border-r border-white/5 flex flex-col z-10 shadow-2xl relative">
 
                 {/* Tab Navigation */}
                 <div className="px-4 pt-4 pb-2 bg-[#13141F]">

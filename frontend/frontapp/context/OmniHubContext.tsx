@@ -49,6 +49,7 @@ interface OmniHubContextType {
     // Data 
     docs: DocRecord[];
     concepts: ConceptNode[];
+    treeData: any; // [NEW] Recursive Tree Data
 
     // AI Loading
     aiStatus: 'idle' | 'syncing' | 'analyzing' | 'completed' | 'error';
@@ -61,6 +62,20 @@ interface OmniHubContextType {
     resetSecurity: () => void;
     reportSecurityEvent: (action: 'DOWNLOAD' | 'APPROVE' | 'MOVE' | 'ACCESS_DENIED' | 'BLOCK_ATTEMPT' | 'ACCESS_ATTEMPT' | 'MFA_SUCCESS', details?: string) => void;
 
+    // Selection & Tree
+    selectedDoc: DocRecord | null;
+    setSelectedDoc: (doc: DocRecord | null) => void;
+    activeCenterId: string | null;
+    setActiveCenterId: (id: string | null) => void;
+    expandedFolders: Set<string>;
+    setExpandedFolders: React.Dispatch<React.SetStateAction<Set<string>>>;
+    folderLimits: Record<string, number>;
+    setFolderLimits: React.Dispatch<React.SetStateAction<Record<string, number>>>;
+    treeSearchQuery: string;
+    setTreeSearchQuery: (query: string) => void;
+    actualTreeData: ActualFolderNode[];
+    scrollToTreeItem: (docId: string, folderName: string) => void;
+
     // Upload Queue (Unified)
     uploadQueue: UploadItem[];
     addUpload: (item: UploadItem) => void;
@@ -68,6 +83,8 @@ interface OmniHubContextType {
     updateUploadStatus: (id: string, status: UploadItem['status'], error?: string) => void;
     isSyncLocked: boolean;
     lastProcessedFile: string | null;
+    updateDoc: (id: string, updates: Partial<DocRecord>) => Promise<void>;
+    addDoc: (doc: DocRecord) => void;
 }
 
 const OmniHubContext = createContext<OmniHubContextType | undefined>(undefined);
@@ -85,6 +102,7 @@ export const OmniHubProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     const [docs, setDocs] = useState<DocRecord[]>([]);
     const [concepts, setConcepts] = useState<ConceptNode[]>([]);
+    const [treeData, setTreeData] = useState<any>(null); // [NEW]
     const [logs, setLogs] = useState<EventLog[]>([]);
 
     // Upload Queue
@@ -128,7 +146,9 @@ export const OmniHubProvider: React.FC<{ children: React.ReactNode }> = ({ child
         setUploadQueue(prev => prev.map(item =>
             item.id === id ? { ...item, status, error } : item
         ));
-    }, []); const login = useCallback((newToken: string) => {
+    }, []);
+
+    const login = useCallback((newToken: string) => {
         setToken(newToken);
         localStorage.setItem('omnihub_token', newToken);
         setIsAuthenticated(true);
@@ -225,9 +245,10 @@ export const OmniHubProvider: React.FC<{ children: React.ReactNode }> = ({ child
                 if (!token) return;
                 // [ARCH_NOTE]: Switched to Real Backend API
                 // Fetches Graph Init (Concepts) + Virtual Tree (Docs)
-                const { concepts: c, docs: d, logMsg } = await BackendAPI.fetchGlobalInitialData(token);
+                const { concepts: c, docs: d, treeData: t, logMsg } = await BackendAPI.fetchGlobalInitialData(token);
                 setConcepts(c);
                 setDocs(d);
+                setTreeData(t); // [NEW] Set Tree Data
                 setIsDataReady(true);
                 addLog(logMsg || `초기 데이터 로드됨: 개념=${c.length}, 문서=${d.length}`, 'INFO', 'SYSTEM', 'admin');
 
@@ -356,11 +377,10 @@ export const OmniHubProvider: React.FC<{ children: React.ReactNode }> = ({ child
         expandedFolders, setExpandedFolders,
         folderLimits, setFolderLimits,
         treeSearchQuery, setTreeSearchQuery,
-        actualTreeData, scrollToTreeItem,
+        actualTreeData, treeData, scrollToTreeItem,
         addLog, updateDoc, addDoc,
         setSecurityState, reportSecurityEvent, resetSecurity,
         logout,
-        // AI Loading
         // AI Loading
         aiStatus, setPollingFolderId, syncStatusData,
         uploadQueue, addUpload, removeUpload, updateUploadStatus,
@@ -369,7 +389,7 @@ export const OmniHubProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }), [
         activeTab, currentRole, isDataReady, isGlobalLoading, globalError, isAuthenticated, userProfile,
         token, docs, concepts, logs, securityState, riskHistory,
-        selectedDoc, activeCenterId, expandedFolders, folderLimits, treeSearchQuery, actualTreeData, scrollToTreeItem,
+        selectedDoc, activeCenterId, expandedFolders, folderLimits, treeSearchQuery, actualTreeData, treeData, scrollToTreeItem,
         addLog, updateDoc, addDoc, reportSecurityEvent, resetSecurity,
         logout,
         aiStatus, setPollingFolderId, syncStatusData,

@@ -29,8 +29,15 @@ export const AIService = {
     },
 
     // 2. Graph Ops
-    getGraphInit: async (limit: number = 50, mode: 'overview' | 'hybrid' = 'overview'): Promise<GraphData> => {
-        const res = await fetch(`${API_BASE_URL}/api/graph/init?limit=${limit}&mode=${mode}`, {
+    getGraphInit: async (params: { mode?: string, max_concepts?: number, max_edges?: number, include_docs?: boolean } = {}): Promise<GraphData> => {
+        const query = new URLSearchParams({
+            mode: params.mode || 'overview',
+            max_concepts: (params.max_concepts || 50).toString(),
+            max_edges: (params.max_edges || 160).toString(),
+            include_docs: (params.include_docs || false).toString()
+        }).toString();
+
+        const res = await fetch(`${API_BASE_URL}/api/graph/init?${query}`, {
             headers: getHeaders()
         });
         if (!res.ok) throw new Error("Graph Init failed");
@@ -42,6 +49,32 @@ export const AIService = {
             headers: getHeaders()
         });
         if (!res.ok) throw new Error("Graph Expand failed");
+        return await res.json();
+    },
+
+    getGraphSubgraph: async (params: {
+        center_concept_id: string,
+        mode?: string,
+        doc_limit?: number,
+        concepts_per_doc?: number,
+        docs_per_concept?: number,
+        max_total_nodes?: number,
+        max_total_edges?: number
+    }): Promise<GraphData> => {
+        const query = new URLSearchParams({
+            center_concept_id: params.center_concept_id,
+            mode: params.mode || 'cascade',
+            doc_limit: (params.doc_limit || 20).toString(),
+            concepts_per_doc: (params.concepts_per_doc || 6).toString(),
+            docs_per_concept: (params.docs_per_concept || 5).toString(),
+            max_total_nodes: (params.max_total_nodes || 600).toString(),
+            max_total_edges: (params.max_total_edges || 1200).toString()
+        }).toString();
+
+        const res = await fetch(`${API_BASE_URL}/api/graph/subgraph?${query}`, {
+            headers: getHeaders()
+        });
+        if (!res.ok) throw new Error("Graph Subgraph failed");
         return await res.json();
     },
 

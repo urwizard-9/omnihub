@@ -35,8 +35,8 @@ class GraphServingIndexBuilder:
         # Co-occurrence Settings
         self.cooc_doc_topk = int(getattr(settings, "COOC_DOC_TOPK", 10))
         self.cooc_min_shared = int(getattr(settings, "COOC_MIN_SHARED_DOCS", 2))
-        self.cooc_min_weight = float(getattr(settings, "COOC_MIN_WEIGHT", 1.0))
-        self.cooc_neighbor_cap = int(getattr(settings, "COOC_NEIGHBOR_CAP", 20))
+        self.cooc_min_weight = float(getattr(settings, "COOC_MIN_WEIGHT", 0.8)) # Default: 0.8
+        self.cooc_neighbor_cap = int(getattr(settings, "COOC_NEIGHBOR_CAP", 4)) # Default: 4 (Sparse)
 
         # In-Memory Cache (For Batch Build)
         self.doc_meta = {} # doc_id -> {title, path, ...}

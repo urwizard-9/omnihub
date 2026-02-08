@@ -1,169 +1,341 @@
-import React, { useState, useEffect } from 'react';
-import { AIService } from '../../services/aiService';
-import { TreeResponse, FolderNode, FileNode } from '../../types';
-import { Folder, FileText, ChevronRight, ChevronDown, FolderOpen } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useOmniHub } from '../../context/OmniHubContext';
+import { DocRecord } from '../../types';
+import { FileText, ChevronRight, ChevronDown, Database, Filter, FolderTree } from 'lucide-react';
 
-/**
- * [DocTreeBrowser]
- * 폴더 트리 기반의 문서 탐색기 컴포넌트입니다.
- * - 윈도우 탐색기처럼 폴더 > 하위폴더 > 파일 구조를 계층적으로 표시합니다.
- * - 폴더 클릭 시 하위 내용을 동적으로 로딩합니다 (Lazy Loading).
- * - 파일 클릭 시 부모 컴포넌트에게 문서 ID를 전달합니다.
- */
-
-// ========== Props 인터페이스 ==========
-interface Props {
-    onFileClick: (docId: string) => void; // 파일 클릭 시 호출되는 콜백 (부모에게 이벤트 위임)
+// ========== Types for Recursive Tree Data ==========
+interface TreeNode {
+    name: string;
+    path: string; // "folder_path" in API
+    children_folders: TreeNode[];
+    children_docs: TreeDoc[];
+    doc_count?: number; // Optional
 }
 
-// ========== 트리 노드 컴포넌트 (재귀적 렌더링) ==========
-interface TreeNodeProps {
-    path: string;           // 폴더 경로 (API 호출용)
-    name: string;           // 표시할 이름
-    type: 'folder' | 'file'; // 노드 타입
-    docId?: string;         // 파일인 경우 문서 ID
-    level: number;          // 들여쓰기 깊이
-    onFileClick: (id: string) => void;
+interface TreeDoc {
+    doc_id: string;
+    title: string;
+    mime_type?: string;
+    doc_metadata?: any;
 }
 
-const TreeNode: React.FC<TreeNodeProps> = ({ path, name, type, docId, level, onFileClick }) => {
-    // ========== 상태 관리 ==========
-    const [expanded, setExpanded] = useState(false);        // 폴더 열림/닫힘 상태
-    const [data, setData] = useState<TreeResponse | null>(null); // 하위 폴더/파일 데이터
-    const [loading, setLoading] = useState(false);          // 로딩 상태
 
-    // ========== 클릭 핸들러 (폴더 확장 또는 파일 선택) ==========
-    const handleExpand = async (e: React.MouseEvent) => {
-        e.stopPropagation(); // 이벤트 버블링 방지
+// ========== Component: Tree File Item (Leaf) ==========
+interface TreeDocItemProps {
+    doc: TreeDoc;
+    isSelected: boolean;
+    onClick: (docId: string) => void;
+}
 
-        // 1. 파일인 경우 -> 부모에게 알림
-        if (type === 'file') {
-            if (docId) onFileClick(docId);
-            return;
-        }
+const TreeDocItem: React.FC<TreeDocItemProps> = ({ doc, isSelected, onClick }) => (
+    <div
+        id={`tree-doc-${doc.doc_id}`}
+        onClick={(e) => { e.stopPropagation(); onClick(doc.doc_id); }}
+        className={`flex items-center gap-2 px-3 py-1.5 rounded-md cursor-pointer text-xs transition-all group/doc border border-transparent ${isSelected
+            ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30 shadow-[0_0_10px_rgba(99,102,241,0.2)] font-bold translate-x-1'
+            : 'text-slate-400 hover:text-indigo-200 hover:bg-white/5'
+            }`}
+    >
+        <FileText size={12} className={`shrink-0 ${isSelected ? 'text-indigo-400' : 'opacity-40 group-hover/doc:opacity-100'}`} />
+        <span className="truncate tracking-tight">{doc.title}</span>
+    </div>
+);
 
-        // 2. 폴더인 경우 -> 토글 (열기/닫기)
-        if (expanded) {
-            setExpanded(false); // 이미 열려있으면 닫기
-        } else {
-            setExpanded(true);
-            // 데이터가 없으면 API 호출 (최초 1회만, 캐싱됨)
-            if (!data) {
-                setLoading(true);
-                try {
-                    const res = await AIService.getTreeStructure(path);
-                    console.log("Tree Data for path:", path, res); // [Debug]
-                    setData(res);
-                } catch (err) {
-                    console.error("Tree Load Error:", err);
-                } finally {
-                    setLoading(false);
-                }
-            }
-        }
-    };
 
-    // ========== [UI/UX] 트리 노드 렌더링 ==========
+const INITIAL_FOLDER_LIMIT = 8;
+const LOAD_MORE_STEP = 20;
+
+// ========== Component: Tree Folder Item (Recursive) ==========
+interface TreeFolderItemProps {
+    node: ApiNode;
+    level: number;
+    expandedFolders: Set<string>;
+    onToggle: (path: string) => void;
+    selectedDocId?: string | null;
+    onFileClick: (docId: string) => void;
+    filterText: string;
+    folderLimits: Record<string, number>;
+    onLoadMore: (path: string) => void;
+}
+
+const TreeFolderItem: React.FC<TreeFolderItemProps> = ({
+    node,
+    level,
+    expandedFolders,
+    onToggle,
+    selectedDocId,
+    onFileClick,
+    filterText,
+    folderLimits,
+    onLoadMore
+}) => {
+    const isExpanded = expandedFolders.has(node.id) || (filterText.length > 0 && node.name.toLowerCase().includes(filterText.toLowerCase()));
+
+    // Split children into folders and files
+    const folders = node.children?.filter(c => c.is_folder) || [];
+    const files = node.children?.filter(c => !c.is_folder) || [];
+
+    // Pagination Logic
+    const limit = folderLimits[node.id] || INITIAL_FOLDER_LIMIT;
+    const isFiltered = filterText.length > 0;
+    const visibleFiles = isFiltered ? files : files.slice(0, limit);
+    const remainingFiles = isFiltered ? 0 : files.length - limit;
+
     return (
-        <div className="select-none">
-            {/* [UI/UX] 노드 행 (폴더/파일 한 줄) */}
+        <div className="animate-in fade-in slide-in-from-left-1 duration-200">
             <div
-                className={`flex items-center gap-2 py-1.5 px-2 hover:bg-white/5 rounded-lg cursor-pointer transition-colors ${expanded ? 'text-white' : 'text-slate-400 hover:text-slate-200'}`}
-                style={{ paddingLeft: `${level * 12 + 8}px` }} // 깊이에 따른 들여쓰기
-                onClick={handleExpand}
+                onClick={(e) => { e.stopPropagation(); onToggle(node.id); }}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-all border border-transparent group ${isExpanded
+                        ? 'bg-amber-500/10 border-amber-500/20 text-amber-200'
+                        : 'hover:bg-white/5 text-slate-400'
+                    }`}
             >
-                {/* [UI/UX] 폴더 확장 화살표 아이콘 */}
-                {type === 'folder' && (
-                    <span className="text-slate-600">
-                        {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                    </span>
-                )}
+                <div className="p-0.5 text-slate-500 hover:text-white transition-colors">
+                    {node.children && node.children.length > 0 ? (
+                        isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />
+                    ) : <div className="w-3.5" />}
+                </div>
 
-                {/* [UI/UX] 폴더/파일 아이콘 */}
-                {type === 'folder' ? (
-                    expanded ? <FolderOpen size={16} className="text-indigo-400" /> : <Folder size={16} className="text-indigo-500/80" />
-                ) : (
-                    <FileText size={16} className="text-emerald-500/80" />
-                )}
+                <Database size={14} className={isExpanded ? "text-amber-400 drop-shadow-[0_0_5px_rgba(251,191,36,0.5)]" : "text-slate-600 group-hover:text-amber-500/50"} />
 
-                {/* [UI/UX] 이름 텍스트 */}
-                <span className="text-sm truncate">{name}</span>
+                <span className="text-xs font-bold truncate flex-1 tracking-tight">{node.name}</span>
+                <span className="text-[9px] bg-white/5 px-1.5 py-0.5 rounded border border-white/5 text-slate-500 font-mono">
+                    {node.children?.length || 0}
+                </span>
             </div>
 
-            {/* [UI/UX] 하위 노드 (재귀적 렌더링) */}
-            {expanded && data && (
-                <div className="animate-in slide-in-from-top-1 duration-200">
-                    {/* 하위 폴더들 */}
-                    {data.folders?.map(f => (
-                        <TreeNode
-                            key={f.path}
-                            path={f.path}
-                            name={f.name}
-                            type="folder"
+            {isExpanded && node.children && (
+                <div className="border-l border-white/10 ml-4 mb-1 space-y-0.5 pl-2">
+                    {/* Folders first */}
+                    {folders.map(child => (
+                        <RecursiveItem
+                            key={child.id}
+                            node={child}
                             level={level + 1}
+                            expandedFolders={expandedFolders}
+                            onToggle={onToggle}
+                            selectedDocId={selectedDocId}
                             onFileClick={onFileClick}
+                            filterText={filterText}
+                            folderLimits={folderLimits}
+                            onLoadMore={onLoadMore}
                         />
                     ))}
 
-                    {/* 하위 파일들 */}
-                    {data.files?.map(f => {
-                        console.log("File Node:", f); // [Debug]
-                        return (
-                            <TreeNode
-                                key={f.doc_id}
-                                path=""
-                                name={f.name || (f as any).title || "Untitled"}
-                                type="file"
-                                docId={f.doc_id}
-                                level={level + 1}
-                                onFileClick={onFileClick}
-                            />
-                        );
-                    })}
+                    {/* Files next */}
+                    {visibleFiles.map(child => (
+                        <RecursiveItem
+                            key={child.id}
+                            node={child}
+                            level={level + 1}
+                            expandedFolders={expandedFolders}
+                            onToggle={onToggle}
+                            selectedDocId={selectedDocId}
+                            onFileClick={onFileClick}
+                            filterText={filterText}
+                            folderLimits={folderLimits}
+                            onLoadMore={onLoadMore}
+                        />
+                    ))}
 
-                    {/* [UI/UX] 빈 폴더 표시 */}
-                    {data.folders.length === 0 && data.files.length === 0 && (
-                        <div className="py-1 px-4 text-xs text-slate-600 italic" style={{ paddingLeft: `${(level + 1) * 12 + 20}px` }}>
-                            (Empty)
-                        </div>
+                    {/* Load More Button */}
+                    {!isFiltered && remainingFiles > 0 && (
+                        <button
+                            onClick={(e) => { e.stopPropagation(); onLoadMore(node.id); }}
+                            className="w-full text-left px-3 py-1.5 text-[10px] text-amber-500/70 hover:text-amber-400 hover:bg-white/5 rounded transition-colors italic font-medium flex items-center gap-1"
+                        >
+                            <span>+ {remainingFiles} more files...</span>
+                        </button>
+                    )}
+
+                    {node.children.length === 0 && (
+                        <div className="px-3 py-1.5 text-[10px] text-slate-600 italic">Empty</div>
                     )}
                 </div>
             )}
-
-            {/* [UI/UX] 로딩 표시 */}
-            {expanded && loading && (
-                <div className="py-1 px-4 text-xs text-slate-600 animate-pulse" style={{ paddingLeft: `${(level + 1) * 12 + 20}px` }}>
-                    Loading...
-                </div>
-            )}
         </div>
     );
 };
 
-// ========== 메인 컴포넌트 (루트 노드 렌더링) ==========
+
+// ========== Main Component: DocTreeBrowser ==========
+interface Props {
+    onFileClick: (docId: string) => void;
+}
+
 const DocTreeBrowser: React.FC<Props> = ({ onFileClick }) => {
+    const {
+        treeData,
+        expandedFolders, setExpandedFolders,
+        treeSearchQuery, setTreeSearchQuery,
+        docs, selectedDoc, scrollToTreeItem,
+        folderLimits, setFolderLimits
+    } = useOmniHub();
+
+    // Toggle Handler
+    const handleToggle = useCallback((path: string) => {
+        setExpandedFolders(prev => {
+            const next = new Set(prev);
+            if (next.has(path)) next.delete(path);
+            else next.add(path);
+            return next;
+        });
+        // Ensure limit is initialized
+        setFolderLimits(prev => {
+            if (!prev[path]) return { ...prev, [path]: INITIAL_FOLDER_LIMIT };
+            return prev;
+        });
+    }, [setExpandedFolders, setFolderLimits]);
+
+    // Load More Handler
+    const handleLoadMore = useCallback((path: string) => {
+        setFolderLimits(prev => ({
+            ...prev,
+            [path]: (prev[path] || INITIAL_FOLDER_LIMIT) + LOAD_MORE_STEP
+        }));
+    }, [setFolderLimits]);
+
+    // Handle File Click (Integrate with Context)
+    const handleFileClick = useCallback((docId: string) => {
+        onFileClick(docId);
+    }, [onFileClick]);
+
+    // Scroll to Selection (Effect)
+    useEffect(() => {
+        if (selectedDoc && selectedDoc.actualPath) {
+            // TODO: Enhance scrollToTreeItem to handle Recursive Structure
+        }
+    }, [selectedDoc]);
+
+    if (!treeData) {
+        return (
+            <div className="flex flex-col items-center justify-center h-full text-slate-600 space-y-2">
+                <Database size={24} className="animate-pulse opacity-50" />
+                <span className="text-xs italic">Loading File System...</span>
+            </div>
+        );
+    }
+
     return (
-        // ========== [UI/UX] 전체 컨테이너 ==========
-        <div className="h-full bg-[#09090b] border-r border-white/5 flex flex-col">
-            {/* [UI/UX] 헤더 */}
-            <div className="p-4 border-b border-white/5 font-bold text-slate-300 text-sm flex items-center gap-2">
-                <FolderOpen size={18} className="text-indigo-500" />
-                문서 탐색기
+        <div className="flex-1 flex flex-col h-full overflow-hidden bg-[#09090b] border-r border-white/5">
+            {/* Header / Search */}
+            <div className="px-6 pt-6 pb-2 shrink-0">
+                <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2 text-amber-400">
+                        <FolderTree size={16} />
+                        <h2 className="font-bold uppercase tracking-wider text-xs">
+                            File System
+                        </h2>
+                    </div>
+                </div>
+
+                {/* Tree Search Input */}
+                <div className="relative group mb-4">
+                    <input
+                        type="text"
+                        value={treeSearchQuery}
+                        onChange={(e) => setTreeSearchQuery(e.target.value)}
+                        placeholder="Filter nodes..."
+                        className="w-full bg-[#050508] border border-white/10 text-slate-200 pl-9 pr-4 py-2 rounded-md text-xs focus:outline-none focus:border-amber-500/50 transition-all placeholder-slate-600 font-mono"
+                    />
+                    <Filter className="absolute left-2.5 top-2.5 text-slate-500" size={12} />
+                </div>
             </div>
 
-            {/* [UI/UX] 스크롤 영역 (트리 본문) */}
-            <div className="flex-1 overflow-y-auto p-2 scrollbar-thin scrollbar-thumb-white/10">
-                {/* 루트 노드 (최상위 폴더) */}
-                <TreeNode
-                    path="/"
-                    name="Root"
-                    type="folder"
-                    onFileClick={onFileClick}
-                    level={0}
+            {/* Tree Content */}
+            <div className="flex-1 overflow-y-auto px-4 pb-6 scrollbar-thin">
+                <RecursiveTreeRoot
+                    node={treeData}
+                    expandedFolders={expandedFolders}
+                    onToggle={handleToggle}
+                    selectedDocId={selectedDoc?.id}
+                    onFileClick={handleFileClick}
+                    filterText={treeSearchQuery}
+                    folderLimits={folderLimits}
+                    onLoadMore={handleLoadMore}
                 />
             </div>
+
+            {/* Footer Info */}
+            <div className="px-6 py-3 border-t border-white/5 bg-[#0e0e12] text-[10px] text-slate-500 flex justify-between items-center shrink-0">
+                <span className="flex items-center gap-1">
+                    <Database size={10} />
+                    <span className="text-slate-400">Total Nodes:</span>
+                    <span className="text-slate-200 font-mono">{docs.length}</span>
+                </span>
+                <span className="opacity-50 font-mono">SYS_READY</span>
+            </div>
         </div>
     );
 };
 
+// ========== Adapter & Recursive Component ==========
+
+interface ApiNode {
+    name: string;
+    id: string; // path
+    is_folder: boolean;
+    children?: ApiNode[];
+    mime_type?: string;
+}
+
+const RecursiveTreeRoot: React.FC<{
+    node: ApiNode,
+    expandedFolders: Set<string>,
+    onToggle: (path: string) => void,
+    selectedDocId?: string | null,
+    onFileClick: (id: string) => void,
+    filterText: string,
+    folderLimits: Record<string, number>,
+    onLoadMore: (path: string) => void
+}> = ({ node, expandedFolders, onToggle, selectedDocId, onFileClick, filterText, folderLimits, onLoadMore }) => {
+
+    if (node.id === '/') {
+        return (
+            <div className="space-y-0.5">
+                {node.children?.map(child => (
+                    <RecursiveItem
+                        key={child.id}
+                        node={child}
+                        level={0}
+                        expandedFolders={expandedFolders}
+                        onToggle={onToggle}
+                        selectedDocId={selectedDocId}
+                        onFileClick={onFileClick}
+                        filterText={filterText}
+                        folderLimits={folderLimits}
+                        onLoadMore={onLoadMore}
+                    />
+                ))}
+            </div>
+        )
+    }
+
+    return <RecursiveItem node={node} level={0} expandedFolders={expandedFolders} onToggle={onToggle} selectedDocId={selectedDocId} onFileClick={onFileClick} filterText={filterText} folderLimits={folderLimits} onLoadMore={onLoadMore} />;
+};
+
+const RecursiveItem: React.FC<{
+    node: ApiNode,
+    level: number,
+    expandedFolders: Set<string>,
+    onToggle: (path: string) => void,
+    selectedDocId?: string | null,
+    onFileClick: (id: string) => void,
+    filterText: string,
+    folderLimits: Record<string, number>,
+    onLoadMore: (path: string) => void
+}> = (props) => {
+    const { node, selectedDocId, onFileClick, filterText } = props;
+
+    if (!node.is_folder) {
+        // Check filtering
+        if (filterText && !node.name.toLowerCase().includes(filterText.toLowerCase())) return null;
+
+        const doc: TreeDoc = { doc_id: node.id, title: node.name, mime_type: node.mime_type };
+        return <TreeDocItem doc={doc} isSelected={selectedDocId === node.id} onClick={onFileClick} />;
+    }
+
+    // Delegate to TreeFolderItem which handles recursion via RecursiveItem
+    return <TreeFolderItem {...props} />;
+};
 export default DocTreeBrowser;

@@ -200,56 +200,56 @@ async def get_file_sync_status(file_id: str, current_user: UserSchema = Depends(
         
     return {"exists": False, "status": "unknown"}
 
-# 2. Virtual Tree API
-@router.get("/files/virtual-tree")
-async def get_virtual_tree():
-    """
-    AI가 분류한 '가상 폴더 구조'를 트리 형태로 반환합니다.
-    Firestore에서 virtual_path 필드를 사용하여 계층 구조를 조립합니다.
-    (Real DB Use)
-    """
-    try:
-        docs = get_db().collection('files').stream()
+# 2. Virtual Tree API [DISABLED - Use /api/tree instead]
+# @router.get("/files/virtual-tree")
+# async def get_virtual_tree():
+#     """
+#     AI가 분류한 '가상 폴더 구조'를 트리 형태로 반환합니다.
+#     Firestore에서 virtual_path 필드를 사용하여 계층 구조를 조립합니다.
+#     (Real DB Use)
+#     """
+#     try:
+#         docs = get_db().collection('files').stream()
         
-        tree = {"name": "Root", "children": [], "is_folder": True}
+#         tree = {"name": "Root", "children": [], "is_folder": True}
         
-        for doc in docs:
-            data = doc.to_dict()
-            v_path = data.get('virtual_path') 
+#         for doc in docs:
+#             data = doc.to_dict()
+#             v_path = data.get('virtual_path') 
             
-            if not v_path:
-                continue
+#             if not v_path:
+#                 continue
                 
-            # 트리 구조 만들기 로직 (간소화)
-            current_node = tree
-            parts = v_path.strip("/").split("/")
+#             # 트리 구조 만들기 로직 (간소화)
+#             current_node = tree
+#             parts = v_path.strip("/").split("/")
             
-            for part in parts:
-                found = False
-                for child in current_node["children"]:
-                    if child["name"] == part and child.get("is_folder"):
-                        current_node = child
-                        found = True
-                        break
+#             for part in parts:
+#                 found = False
+#                 for child in current_node["children"]:
+#                     if child["name"] == part and child.get("is_folder"):
+#                         current_node = child
+#                         found = True
+#                         break
                 
-                if not found:
-                    new_node = {"name": part, "children": [], "is_folder": True}
-                    current_node["children"].append(new_node)
-                    current_node = new_node
+#                 if not found:
+#                     new_node = {"name": part, "children": [], "is_folder": True}
+#                     current_node["children"].append(new_node)
+#                     current_node = new_node
             
-            # 리프 노드에 파일 추가
-            file_node = {
-                "name": data.get('name'),
-                "id": data.get('file_id'),
-                "mime_type": data.get('mime_type'),
-                "is_folder": False
-            }
-            current_node["children"].append(file_node)
+#             # 리프 노드에 파일 추가
+#             file_node = {
+#                 "name": data.get('name'),
+#                 "id": data.get('file_id'),
+#                 "mime_type": data.get('mime_type'),
+#                 "is_folder": False
+#             }
+#             current_node["children"].append(file_node)
             
-        return tree
+#         return tree
         
-    except Exception as e:
-         raise HTTPException(status_code=500, detail=str(e))
+#     except Exception as e:
+#          raise HTTPException(status_code=500, detail=str(e))
 
 # 3. File Detail & Logging (Real DB)
 @router.get("/files/{file_id}")

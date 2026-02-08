@@ -477,7 +477,7 @@ export const BackendAPI = {
         // Note: Profile is fetched separately in Context
         const [graphData, treeData] = await Promise.all([
             apiFetch(`${API_BASE_URL}/api/graph/init?limit=50`, { headers: { 'Authorization': `Bearer ${token}` } }),
-            apiFetch(`${API_BASE_URL}/files/virtual-tree`, { headers: { 'Authorization': `Bearer ${token}` } })
+            apiFetch(`${API_BASE_URL}/api/tree/full`, { headers: { 'Authorization': `Bearer ${token}` } })
         ]);
 
         // Transform Graph Nodes to Concepts
@@ -496,6 +496,7 @@ export const BackendAPI = {
         return {
             concepts,
             docs,
+            treeData, // [NEW] Return raw recursive tree for Legacy UI
             logMsg: `Global Data Loaded: ${concepts.length} concepts, ${docs.length} docs found.`
         };
     }

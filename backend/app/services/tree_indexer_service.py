@@ -41,6 +41,17 @@ class TreeIndexerService:
         title = profile_data.get("title", "Untitled")
         folder_path = profile_data.get("folder_path", "/")
         
+        # [Fix] Data Correction: If folder_path looks like a file (ends with extension), strip the filename.
+        # This fixes the issue where files are shown as folders in the tree.
+        clean_path = folder_path.rstrip("/")
+        # Common extensions check
+        if clean_path.lower().endswith(('.pdf', '.docx', '.xlsx', '.pptx', '.txt', '.jpg', '.png', '.jpeg')):
+            if "/" in clean_path:
+                folder_path = clean_path.rsplit("/", 1)[0]
+            else:
+                folder_path = "/"
+            # logger.warning(f"Corrected suspicious folder path: {clean_path} -> {folder_path}")
+
         # Normalize
         if not folder_path.startswith("/"): folder_path = "/" + folder_path
         if not folder_path.endswith("/"): folder_path += "/"
@@ -184,6 +195,36 @@ class TreeIndexerService:
         for doc in query:
             self._add_to_cache(tenant_id, engagement_id, doc.to_dict())
             count += 1
+            
+        # [Fallback] If no profiles found, try 'files' collection to support pre-ingestion files
+        if count == 0:
+            logger.info(f"No profiles found for {tenant_id}. Fallback to 'files' collection for tree structure.")
+            try:
+                # Attempt to find files for this tenant
+                # Note: 'files' collection must have tenant_id/engagement_id indexed
+                files_query = (self.db.collection("files")
+                             .where("tenant_id", "==", tenant_id)
+                             .where("engagement_id", "==", engagement_id)
+                             .where("trashed", "==", False) # Exclude trashed if possible
+                             .stream())
+                
+                for f in files_query:
+                    data = f.to_dict()
+                    # Map 'files' data to profile schema
+                    mapped_data = {
+                        "doc_id": data.get("file_id", f.id),
+                        "title": data.get("name", "Untitled"),
+                        "folder_path": data.get("virtual_path", "/"), # Key Field
+                        "modified_time": data.get("updatedAt"),
+                        "review_status": "pending",
+                        "security_level": "low"
+                    }
+                    self._add_to_cache(tenant_id, engagement_id, mapped_data)
+                    count += 1
+                    
+            except Exception as e:
+                logger.warning(f"Fallback scan failed: {e}")
+
             
         # 4. Flush (Overwrite)
         self.flush_to_firestore(mode="overwrite")

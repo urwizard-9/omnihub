@@ -123,7 +123,12 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ onDocClick }) => {
         if (!silent) setLoading(true);
         try {
             // Updated: Call with mode="overview"
-            const data = await AIService.getGraphInit(50, 'overview');
+            const data = await AIService.getGraphInit({
+                mode: 'overview',
+                max_concepts: 50,
+                max_edges: 160,
+                include_docs: false
+            });
             if (data && data.nodes) {
                 // Initialize raw nodes with degree info
                 const simNodes = data.nodes.map(n => ({ ...n, data: n })) as SimulationNode[];
@@ -586,29 +591,90 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ onDocClick }) => {
             } else if (d.group === 'document') {
                 if (onDocClick) onDocClick(d.id);
             } else if (d.group === 'concept') {
-                // [Modified] Local Focus 3-Hop Expansion
-                // Instead of merging, we REPLACE the graph with the expanded neighborhood.
-                // This creates the "Local Focus" effect requested.
-                // Passing limit=50 to get robust 3rd hop data (backend handles logic)
+                // [Modified] 3-Hop Cascade Subgraph Expansion
                 setLoading(true);
-                AIService.expandGraph(d.id, 'concept', 50).then(res => {
+                AIService.getGraphSubgraph({
+                    center_concept_id: d.id,
+                    mode: 'cascade',
+                    doc_limit: 20,
+                    concepts_per_doc: 6,
+                    docs_per_concept: 5,
+                    max_total_nodes: 600,
+                    max_total_edges: 1200
+                }).then(res => {
                     setLoading(false);
                     if (res && res.nodes && res.nodes.length > 0) {
-                        const newSimNodes = res.nodes.map(n => ({ ...n, data: n, degree: 1 })) as SimulationNode[];
-                        const newSimLinks = (res.links || (res as any).edges).map((l: any) => ({ ...l })) as SimulationLink[];
 
-                        // Force layout restart
-                        setRawNodes(newSimNodes);
-                        setRawLinks(newSimLinks);
+                        if (viewMode === 'local') {
+                            // [Local Focus Mode] REPLACE graph with new 3-hop subgraph
+                            const newSimNodes = res.nodes.map(n => ({ ...n, data: n, degree: 1 })) as SimulationNode[];
+                            const newSimLinks = (res.links || (res as any).edges).map((l: any) => ({ ...l })) as SimulationLink[];
 
-                        // Optional: Reset zoom to center
-                        if (zoomRef.current && svgRef.current) {
-                            d3.select(svgRef.current)
-                                .transition().duration(750)
-                                .call(zoomRef.current.transform,
-                                    d3.zoomIdentity.translate(dimensions.width / 2, dimensions.height / 2).scale(1.0));
+                            // Degree Recalc
+                            const degreeMap: Record<string, number> = {};
+                            newSimLinks.forEach(l => {
+                                const s = typeof l.source === 'string' ? l.source : (l.source as any).id;
+                                const t = typeof l.target === 'string' ? l.target : (l.target as any).id;
+                                degreeMap[s] = (degreeMap[s] || 0) + 1;
+                                degreeMap[t] = (degreeMap[t] || 0) + 1;
+                            });
+                            newSimNodes.forEach(n => { n.degree = degreeMap[n.id] || 1; });
+
+                            setRawNodes(newSimNodes);
+                            setRawLinks(newSimLinks);
+
+                            // Centering
+                            if (zoomRef.current && svgRef.current) {
+                                d3.select(svgRef.current)
+                                    .transition().duration(750)
+                                    .call(zoomRef.current.transform,
+                                        d3.zoomIdentity.translate(dimensions.width / 2, dimensions.height / 2).scale(0.9));
+                            }
+
+                        } else {
+                            // [Default Mode] MERGE (Expand)
+                            setRawNodes(prevNodes => {
+                                const nodeMap = new Map<string, SimulationNode>();
+                                prevNodes.forEach(n => nodeMap.set(n.id, n));
+
+                                // Append new nodes
+                                res.nodes.forEach(n => {
+                                    if (!nodeMap.has(n.id)) {
+                                        nodeMap.set(n.id, { ...n, data: n, degree: 1, x: d.x, y: d.y } as SimulationNode); // Spawn near parent
+                                    }
+                                });
+                                return Array.from(nodeMap.values());
+                            });
+
+                            setRawLinks(prevLinks => {
+                                const linkMap = new Map<string, SimulationLink>();
+                                // Existing links
+                                prevLinks.forEach(l => {
+                                    const s = typeof l.source === 'string' ? l.source : (l.source as any).id;
+                                    const t = typeof l.target === 'string' ? l.target : (l.target as any).id;
+                                    const k = `${s}|${t}|${l.type}`;
+                                    linkMap.set(k, l);
+                                });
+
+                                // New links
+                                const newRawLinks = res.links || (res as any).edges || [];
+                                newRawLinks.forEach((l: any) => {
+                                    const s = l.source;
+                                    const t = l.target;
+                                    const k = `${s}|${t}|${l.type || 'related'}`; // Fix potential key mismatch
+                                    if (!linkMap.has(k)) {
+                                        linkMap.set(k, { ...l } as SimulationLink);
+                                    }
+                                });
+                                return Array.from(linkMap.values());
+                            });
                         }
+
+                        // Note: Simulation auto-restarts on prop change in useEffect
                     }
+                }).catch(err => {
+                    setLoading(false);
+                    console.error("Cascade Expand Error:", err);
                 });
             }
         });
