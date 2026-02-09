@@ -1,4 +1,6 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()
 import re
 import logging
 from typing import List, Dict, Any, Optional
@@ -11,11 +13,11 @@ logger = logging.getLogger("Generator")
 PROJECT_ID = os.getenv("GCP_PROJECT_ID")
 LOCATION = os.getenv("VERTEX_LOCATION", "us-central1")
 MODEL_NAME = os.getenv("VERTEX_MODEL_NAME", "gemini-2.0-flash-exp")
-MAX_CONTEXT = int(os.getenv("MAX_CONTEXT_CHUNKS", 10))
+MAX_CONTEXT = int(os.getenv("MAX_CONTEXT", 15))
 STRICT_FORMAT = os.getenv("STRICT_FORMAT", "false").lower() == "true"
 
 # 컨텍스트 청크당 최대 글자수 (너무 긴 snippet 방지)
-MAX_CHUNK_LENGTH = int(os.getenv("MAX_CHUNK_LENGTH", 1200))
+MAX_CHUNK_LENGTH = int(os.getenv("MAX_CHUNK_LENGTH", 2000))
 
 
 class Generator:
@@ -272,4 +274,4 @@ class Generator:
             
         except Exception as e:
             logger.error(f"Generation Failed: {e}")
-            return "죄송합니다. 답변 생성 중 오류가 발생했습니다."
+            return f"죄송합니다. 답변 생성 중 오류가 발생했습니다. (Error: {str(e)[:100]})"

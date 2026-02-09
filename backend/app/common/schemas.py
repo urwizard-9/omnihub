@@ -12,6 +12,11 @@ class Evidence(BaseModel):
     span: Optional[Dict[str, int]] = None # {"start": 0, "end": 100}
     snippet: Optional[str] = Field(None, description="Short text capture, usually < 300 chars")
     title: Optional[str] = None # Added for Context
+    
+    # [New] SSOT & Relevance
+    ssot_score: Optional[int] = None
+    ssot_explain: Optional[str] = None
+    relevance: Optional[float] = None
 
 class Citation(BaseModel):
     """
@@ -20,6 +25,13 @@ class Citation(BaseModel):
     idx: int = Field(..., description="Citation Index (1-based)")
     doc_id: str
     title: Optional[str] = None
+    
+    # [New] SSOT
+    ssot_score: Optional[int] = None
+    ssot_explain: Optional[str] = None
+    relevance: Optional[float] = None
+    
+    source_link: Optional[str] = None
     source_link: Optional[str] = None
     page: Optional[int] = None
     chunk_id: Optional[str] = None

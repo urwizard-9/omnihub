@@ -43,11 +43,27 @@ class CardSummarizer:
         - Do not include markdown code blocks. Just raw JSON.
         """
         try:
-            response = self.model.generate_content(prompt)
+            from vertexai.generative_models import HarmCategory, HarmBlockThreshold
+            safety = {
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+            config = {"response_mime_type": "application/json"}
+            
+            response = self.model.generate_content(prompt, safety_settings=safety, generation_config=config)
+            
             raw_text = response.text.strip()
             if raw_text.startswith("```"):
                 raw_text = raw_text.strip("`").replace("json\n", "").replace("json", "")
             return json.loads(raw_text)
+            
+        except ImportError:
+             # Fallback if vertexai SDK is old
+             response = self.model.generate_content(prompt)
+             return json.loads(response.text.strip().replace("```json", "").replace("```", ""))
+             
         except Exception as e:
             logger.error(f"LLM Summary Fail: {e}")
             return {"l1": "요약 실패", "l2": "LLM 호출 오류", "l3": str(e)[:50]}
@@ -58,7 +74,10 @@ class CardSummarizer:
         blob = self.bucket.blob(blob_path)
         try:
             content = blob.download_as_text()
-            return json.loads(content)
+            data = json.loads(content)
+            if isinstance(data, dict):
+                return data.get("chunks", [])
+            return data
         except Exception:
             return []
 
@@ -83,7 +102,9 @@ class CardSummarizer:
             
         # Context building (Head 5 chunks)
         # Filter only text chunks
-        text_chunks = [c for c in chunks if c.get("type", "text") == "text"]
+        # Filter valid text chunks (text family, doc/excel summaries, invoice data)
+        allowed_prefixes = ("text", "doc_", "excel", "invoice")
+        text_chunks = [c for c in chunks if isinstance(c, dict) and str(c.get("type", "text")).startswith(allowed_prefixes)]
         input_chunks = text_chunks[:5]
         context_text = "\n\n".join([c.get("text", "") for c in input_chunks])
         

@@ -40,13 +40,15 @@ class DocIndexUpserter:
         current_hash = current_doc.get("doc_content_hash")
         new_hash = profile_data.get("doc_content_hash")
         
-        # If new doc, defaults to PENDING
-        current_status = current_doc.get("review_status", ReviewStatus.PENDING.value)
+        # If new doc, defaults to APPROVED
+        # Auto-approve logic requested
+        current_status = current_doc.get("review_status", ReviewStatus.APPROVED.value)
         new_status = current_status
         
+        # Even if content changed, default to APPROVED
         if current_hash != new_hash:
-            new_status = ReviewStatus.PENDING.value
-            logger.info(f"Content Changed: Resetting status to PENDING for {doc_id}")
+            new_status = ReviewStatus.APPROVED.value
+            logger.info(f"Content Changed: Resetting status to APPROVED for {doc_id}")
 
         # 2. Apply Workflow Rules (Centralized Logic)
         # This returns {active, graph_visible, searchable, review_status}

@@ -41,167 +41,218 @@ class ConceptBuilder:
 
     def load_entities_from_gcs(self, gcs_uri: str) -> list:
         """GCS에서 엔티티 리스트 로드"""
-        if not gcs_uri: return []
+        if not gcs_uri or not gcs_uri.startswith("gs://"): return []
         try:
-            blob_path = gcs_uri.replace(f"gs://{self.bucket.name}/", "")
+            blob_path = gcs_uri.replace(f"gs://{self.bucket_name}/", "")
             blob = self.bucket.blob(blob_path)
             raw = blob.download_as_text()
             data = json.loads(raw)
-            # [Fix] EntityExtractor saves {doc_id, entities: [], relations: []}, extract 'entities' array
             if isinstance(data, dict):
                 return data.get("entities", [])
             elif isinstance(data, list):
-                return data  # Legacy: direct list
+                return data  
             return []
         except Exception as e:
             logger.error(f"Failed to load entities from {gcs_uri}: {e}")
             return []
 
-    # ... run_batch ...
+    # --- Distributed Lock ---
+    def acquire_lock(self, lock_key: str, timeout_sec: int = 60) -> bool:
+        """Simple Firestore Lock"""
+        lock_ref = self.db.collection("pipeline_locks").document(lock_key)
+        
+        @firestore.transactional
+        def _acquire_in_transaction(transaction, ref):
+            snapshot = ref.get(transaction=transaction)  # Correct API usage
+            now = time.time()
+            if snapshot.exists:
+                data = snapshot.to_dict()
+                expire_at = data.get("expire_at", 0)
+                # 만료되지 않은 락이 있으면 실패
+                if now < expire_at:
+                    return False
+            
+            # 락 획득 (또는 탈취)
+            transaction.set(ref, {
+                "locked_at": now,
+                "expire_at": now + timeout_sec,
+                "holder": "concept_builder"
+            })
+            return True
 
+        transaction = self.db.transaction()
+        try:
+            return _acquire_in_transaction(transaction, lock_ref)
+        except Exception as e:
+            logger.warning(f"Lock acquire failed: {e}")
+            return False
+
+    def release_lock(self, lock_key: str):
+        self.db.collection("pipeline_locks").document(lock_key).delete()
+
+    # --- Core Logic ---
     def process_single_document(self, doc_id: str):
         """
         단일 문서에 대한 Concept Incremental Update
-        해당 문서의 엔티티만 처리하여 관련 개념 업데이트
-        + Concept Map 생성/업데이트 (Edge 생성을 위해 필수)
+        **CRITICAL**: Concept Map은 Global State이므로 동시성 제어가 필수입니다.
+        (Distributed Lock 적용)
         """
-        logger.info(f"🧠 [Concept] Incremental update for {doc_id}")
-        
-        # 1. 해당 문서의 엔티티 조회
-        ent_ref = self.db.collection("entities").document(doc_id).get()
-        if not ent_ref.exists:
-            logger.warning(f"SKIP {doc_id}: No entities found")
-            return
-            
-        gcs_uri = ent_ref.get("gcs_entities_uri")
-        entities = self.load_entities_from_gcs(gcs_uri)
-        
-        if not entities:
-            logger.warning(f"SKIP {doc_id}: Empty entities list")
-            return
+        profile_ref = self.db.collection("profiles").document(doc_id).get()
+        if not profile_ref.exists: return
         
         tenant = getattr(settings, "TENANT_ID", "default")
         engagement = getattr(settings, "ENGAGEMENT_ID", "default")
         
-        # 2. 기존 Concept Map 로드 (병합을 위해)
-        # Note: 매번 전체 맵을 로드하는 것은 비효율적일 수 있으나, 현재 구조상 유지
-        existing_map = self._load_existing_concept_map()
+        # Lock Key Scope: Tenant + Engagement
+        lock_key = f"concept_map_lock__{tenant}__{engagement}"
         
-        # 3. 엔티티별 개념 생성/업데이트
-        batch = self.db.batch()
-        batch_count = 0
-        processed_concepts = set()
-        new_map_entries = {}
-        
-        for ent in entities:
-            raw_name = ent.get("name")
-            type_ = ent.get("type", "OTHERS")
+        # Try Lock
+        if not self.acquire_lock(lock_key, timeout_sec=60):
+            logger.warning(f"🔒 [Concept] Lock busy for {doc_id}. Retrying once...")
+            time.sleep(2)
+            if not self.acquire_lock(lock_key, timeout_sec=60):
+                logger.error(f"❌ [Concept] Failed to acquire lock for {doc_id}. Skipping run.")
+                return
+
+        try:
+            logger.info(f"🧠 [Concept] Incremental update for {doc_id} (Locked)")
             
-            # A. 키/정규화 통일: Priority to concept_key
-            concept_key = ent.get("concept_key")
-            if concept_key and ":" in concept_key:
-                # concept_key format: "TYPE:normalized_name"
-                _, norm_name = concept_key.split(":", 1)
-            else:
-                if not raw_name: continue
-                norm_name = self.normalize_name(raw_name)
+            ent_ref = self.db.collection("entities").document(doc_id).get()
+            if not ent_ref.exists:
+                logger.warning(f"SKIP {doc_id}: No entities found")
+                return
+                
+            gcs_uri = ent_ref.get("gcs_entities_uri")
+            entities = self.load_entities_from_gcs(gcs_uri)
             
-            concept_id = self.generate_concept_id(type_, norm_name)
+            if not entities:
+                logger.warning(f"SKIP {doc_id}: Empty entities list")
+                return
             
-            if concept_id in processed_concepts:
-                continue
-            processed_concepts.add(concept_id)
+            # Global Map Load (Always FRESH from GCS inside Lock)
+            existing_map = self._load_existing_concept_map()
             
-            # Firestore Read (Current State)
-            existing_ref = self.db.collection("concepts").document(concept_id).get()
+            batch = self.db.batch()
+            batch_count = 0
+            processed_concepts = set()
+            new_map_entries = {}
             
-            aliases_set = {raw_name}
-            for a in ent.get("aliases", []):
-                aliases_set.add(a)
-            
-            if existing_ref.exists:
-                # Update existing concept
-                existing_data = existing_ref.to_dict()
+            for ent in entities:
+                raw_name = ent.get("name")
+                type_ = ent.get("type", "OTHERS")
                 
-                # B. doc_frequency 최소 방어
-                doc_ids_sample = existing_data.get("doc_ids_sample", [])
+                # A. Identify Concept Key
+                concept_key = ent.get("concept_key")
+                if concept_key and ":" in concept_key:
+                    _, norm_name = concept_key.split(":", 1)
+                else:
+                    if not raw_name: continue
+                    norm_name = self.normalize_name(raw_name)
                 
-                should_increment = doc_id not in doc_ids_sample
+                concept_id = self.generate_concept_id(type_, norm_name)
                 
-                # Update sample list (Limit 50)
-                if should_increment:
-                    doc_ids_sample.append(doc_id)
-                    if len(doc_ids_sample) > 50:
-                        doc_ids_sample.pop(0) # Remove oldest
+                if concept_id in processed_concepts:
+                    continue
+                processed_concepts.add(concept_id)
                 
-                # Merge aliases
-                current_aliases = set(existing_data.get("aliases", []))
-                merged_aliases = sorted(list(aliases_set | current_aliases))
+                # B. Firestore Update
+                existing_ref = self.db.collection("concepts").document(concept_id).get()
                 
-                update_data = {
-                    "aliases": merged_aliases,
-                    "last_seen_at": firestore.SERVER_TIMESTAMP,
-                    "total_occurrence": firestore.Increment(1),
-                    "doc_ids_sample": doc_ids_sample # Update sample list
-                }
+                aliases_set = {raw_name}
+                for a in ent.get("aliases", []):
+                    aliases_set.add(a)
                 
-                if should_increment:
-                    # [Defense] Increase doc_frequency only if new doc
-                    update_data["doc_frequency"] = firestore.Increment(1)
-                
-                # Map Update (Add new aliases)
-                for alias in merged_aliases:
-                    norm_alias = self.normalize_name(alias)
-                    map_key = f"{type_}:{norm_alias}"
-                    new_map_entries[map_key] = concept_id
+                if existing_ref.exists:
+                    # Update Existing
+                    existing_data = existing_ref.to_dict()
+                    doc_ids_sample = existing_data.get("doc_ids_sample", [])
+                    should_increment = doc_id not in doc_ids_sample
                     
-                batch.set(self.db.collection("concepts").document(concept_id), update_data, merge=True)
-                
-            else:
-                # Create new concept
-                concept_data = {
-                    "concept_id": concept_id,
-                    "tenant_id": tenant,
-                    "engagement_id": engagement,
-                    "type": type_,
-                    "canonical_name": raw_name, # First seen name as canonical
-                    "aliases": sorted(list(aliases_set)),
-                    "doc_frequency": 1,
-                    "total_occurrence": 1,
-                    "doc_ids_sample": [doc_id], # Init sample list
-                    "last_seen_at": firestore.SERVER_TIMESTAMP,
-                    "rules_version": self.rules_version,
-                    "active": True
-                }
-                
-                # Map Add
-                for alias in sorted(list(aliases_set)):
-                    norm_alias = self.normalize_name(alias)
-                    map_key = f"{type_}:{norm_alias}"
-                    new_map_entries[map_key] = concept_id
+                    if should_increment:
+                        doc_ids_sample.append(doc_id)
+                        if len(doc_ids_sample) > 50:
+                            doc_ids_sample.pop(0) 
                     
-                batch.set(self.db.collection("concepts").document(concept_id), concept_data, merge=True)
+                    current_aliases = set(existing_data.get("aliases", []))
+                    merged_aliases = sorted(list(aliases_set | current_aliases))
+                    
+                    update_data = {
+                        "aliases": merged_aliases,
+                        "last_seen_at": firestore.SERVER_TIMESTAMP,
+                        "total_occurrence": firestore.Increment(1),
+                        "doc_ids_sample": doc_ids_sample
+                    }
+                    if should_increment:
+                        update_data["doc_frequency"] = firestore.Increment(1)
+                    
+                    # Update Map Entries (New Aliases)
+                    for alias in merged_aliases:
+                        norm_alias = self.normalize_name(alias)
+                        map_key = f"{type_}:{norm_alias}"
+                        # Only add if not in existing map or overwriting same ID
+                        # (Safe to overwrite as ID is deterministic)
+                        new_map_entries[map_key] = concept_id
+                        
+                    batch.set(self.db.collection("concepts").document(concept_id), update_data, merge=True)
+                    
+                else:
+                    # Create New
+                    concept_data = {
+                        "concept_id": concept_id,
+                        "tenant_id": tenant,
+                        "engagement_id": engagement,
+                        "type": type_,
+                        "canonical_name": raw_name,
+                        "aliases": sorted(list(aliases_set)),
+                        "doc_frequency": 1,
+                        "total_occurrence": 1,
+                        "doc_ids_sample": [doc_id],
+                        "last_seen_at": firestore.SERVER_TIMESTAMP,
+                        "rules_version": self.rules_version,
+                        "active": True
+                    }
+                    
+                    for alias in sorted(list(aliases_set)):
+                        norm_alias = self.normalize_name(alias)
+                        map_key = f"{type_}:{norm_alias}"
+                        new_map_entries[map_key] = concept_id
+                        
+                    batch.set(self.db.collection("concepts").document(concept_id), concept_data, merge=True)
+                
+                batch_count += 1
+                if batch_count >= 400:
+                    batch.commit()
+                    batch = self.db.batch()
+                    batch_count = 0
             
-            batch_count += 1
-            if batch_count >= 400:
+            if batch_count > 0:
                 batch.commit()
-                batch = self.db.batch()
-                batch_count = 0
-        
-        if batch_count > 0:
-            batch.commit()
-        
-        # 4. Save merged map
-        # Note: This overwrites the map with merged keys. Concurrent updates might conflict here.
-        # But for prototype/MVP, this is acceptable as per requirements.
-        if new_map_entries:
-            # Merge logic: if key exists in existing_map, new value overwrites (usually same)
-            # or we respect existing to avoid flip-flop? concept_id is deterministic, so result is same.
-            merged_map = {**existing_map, **new_map_entries}
-            self.save_concept_map(merged_map)
-        
-        logger.info(f"✅ [Concept] Updated {len(processed_concepts)} concepts for {doc_id}")
-        logger.info(f"   📊 Concept Map: {len(new_map_entries)} updated entries")
+            
+            # C. Save Merged Map (Atomic Update via Lock)
+            if new_map_entries:
+                merged_map = {**existing_map, **new_map_entries}
+                # Check diff count to log
+                diff = len(merged_map) - len(existing_map)
+                if diff > 0:
+                    self.save_concept_map(merged_map)
+                    logger.info(f"   📊 Concept Map Updated: +{diff} entries")
+            
+            # Flag Off (concepts=False)
+            # Next Step Trigger? Usually Edges step follows.
+            # Usually Pipeline Runner handles trigger, but here we just flag off.
+            self.db.collection("profiles").document(doc_id).set({
+                "process_flags": {"concepts": False}
+            }, merge=True)
+
+            logger.info(f"✅ [Concept] Updated {len(processed_concepts)} concepts for {doc_id}")
+
+        except Exception as e:
+            logger.error(f"❌ [Concept] Error processing {doc_id}: {e}")
+            # Do NOT flag off, let it retry? Or flag fail?
+            # For now, just log.
+
+        finally:
+            self.release_lock(lock_key)
     
     def _load_existing_concept_map(self) -> dict:
         """기존 Concept Map 로드 (없으면 빈 dict 반환)"""
@@ -243,3 +294,6 @@ class ConceptBuilder:
             "entry_count": len(concept_map),
             "updated_at": firestore.SERVER_TIMESTAMP
         }, merge=True)
+
+if __name__ == "__main__":
+    pass

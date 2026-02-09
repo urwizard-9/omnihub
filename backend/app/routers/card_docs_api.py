@@ -32,16 +32,15 @@ async def get_doc_detail(request: Request, doc_id: str):
     # documents 컬렉션에 card_summary ({l1, l2, l3})가 있음.
     
     card_summary = doc.get("card_summary", {})
-    # Fallback for legacy
-    if not card_summary and "card" in doc:
-        # Legacy mapping if strictly needed (Operating Minimum: keep logic simple)
-        pass
-
+    
     embedding_evidence = []
     # Fetch detailed card from 'cards' collection to get evidence
     detailed_card = repo.get_card(doc_id)
     if detailed_card:
         embedding_evidence = detailed_card.get("card_evidence", [])
+        # [Fix] Fallback: If card_summary is missing from documents, use cards collection
+        if not card_summary:
+            card_summary = detailed_card.get("card", {})
 
     response = {
         "doc_id": doc_id,
@@ -63,6 +62,9 @@ async def get_doc_detail(request: Request, doc_id: str):
         "ssot_score": doc.get("ssot_score"),
         "ssot_explain": doc.get("ssot_explain"),
         "ssot_signals": [], # Default empty
+        
+        # [Fix] Security Explain Field
+        "security_explain": doc.get("security_explain"),
 
         
         "concepts": doc.get("top_concepts", []),
@@ -73,10 +75,15 @@ async def get_doc_detail(request: Request, doc_id: str):
 
     # Fetch Detailed Signals (Optional but useful for Drawer)
     policy_detail = repo.get_doc_policy(doc_id)
-    if policy_detail and "ssot_signals" in policy_detail:
-        # Sort by impact
-        signals = policy_detail["ssot_signals"]
-        sorted_signals = sorted(signals, key=lambda x: abs(x.get('delta', 0)), reverse=True)
-        response["ssot_signals"] = sorted_signals[:8]
+    if policy_detail:
+        # SSOT Signals
+        if "ssot_signals" in policy_detail:
+            signals = policy_detail["ssot_signals"]
+            sorted_signals = sorted(signals, key=lambda x: abs(x.get('delta', 0)), reverse=True)
+            response["ssot_signals"] = sorted_signals[:8]
+        
+        # [Fix] Security Explain Fallback (if not in documents, get from policies)
+        if not response.get("security_explain") and policy_detail.get("security_explain"):
+            response["security_explain"] = policy_detail.get("security_explain")
         
     return response

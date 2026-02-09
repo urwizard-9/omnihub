@@ -1,4 +1,7 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()
+import re
 import json
 import logging
 from typing import Dict, Any, List, Tuple
@@ -17,7 +20,7 @@ logger.setLevel(logging.INFO)
 import datetime
 from google.cloud import aiplatform
 import vertexai
-from vertexai.generative_models import GenerativeModel, GenerationConfig
+from vertexai.generative_models import GenerativeModel, GenerationConfig, SafetySetting, HarmCategory, HarmBlockThreshold
 
 # --- SSOT Scorer ---
 class SSoTScorer:
@@ -88,19 +91,30 @@ class SSoTScorer:
         # Clamp 0~100
         final_score = max(0, min(100, base_score))
         
+        # [Fix] Add default signal if no rules matched
+        if not signals:
+            signals.append({
+                "source": "default", 
+                "name": "baseline", 
+                "delta": 0, 
+                "evidence": "표준 신뢰도 기준 적용 (특이사항 없음)"
+            })
+        
         return final_score, signals
 
 # --- SSOT Explainer ---
 class SSoTExplainer:
     def __init__(self, mode="rule_only"):
         self.mode = mode # 'rule_only' or 'llm_summary'
-        self.max_output_tokens = int(os.getenv("SSOT_EXPLAIN_LLM_MAX_TOKENS", 180))
+        self.max_output_tokens = int(os.getenv("SSOT_EXPLAIN_LLM_MAX_TOKENS", 512))
         
         # Init Vertex AI if needed
         if self.mode == "llm_summary":
             try:
-                vertexai.init(project=settings.GCP_PROJECT_ID, location=settings.GCP_LOCATION)
-                self.model = GenerativeModel("gemini-1.5-pro-preview-0409") # Or use settings model
+                vertexai.init(project=settings.PROJECT_ID, location=settings.VERTEX_LOCATION)
+                model_name = os.getenv("EXPLAINER_LLM_MODEL", "gemini-2.5-flash")
+                self.model = GenerativeModel(model_name)
+                logger.info(f"SSOT Explainer using model: {model_name}")
             except Exception as e:
                 logger.warning(f"Vertex AI Init failed for SSOT Explainer: {e}. Fallback to rule_only.")
                 self.mode = "rule_only"
@@ -123,29 +137,71 @@ class SSoTExplainer:
 
         # 2. LLM Summary
         if self.mode == "llm_summary":
+            response_text = "N/A"
             try:
                 prompt = f"""
-                You are a Document Reliability Analyst.
-                Based on the following reliability signals, provide a ONE-LINE summary explaining why this document has a reliability score of {score}/100.
-                
-                Signals:
-                {json.dumps(sorted_signals, ensure_ascii=False)}
-                
-                Output JSON format: {{ "one_liner": "...", "keywords": ["keyword1", "keyword2"] }}
-                Korean language preferred for output.
-                """
+You are a Document Reliability Analyst.
+
+Task:
+Given ssot_score and ssot_signals, write a ONE-LINE Korean explanation for a UI card.
+
+Constraints:
+- Use ONLY the provided signals. Do NOT invent any facts.
+- Mention at most 2~3 strongest reasons (largest absolute delta).
+- Output MUST be Korean only.
+- Keep one_liner within 80 Korean characters.
+- Do not include markdown code blocks. Just raw JSON.
+
+Input:
+ssot_score = {score}/100
+ssot_signals (top) = {json.dumps(sorted_signals, ensure_ascii=False)}
+
+Output JSON ONLY (no markdown, no extra text):
+{{"one_liner":"...", "keywords":["...","...","..."]}}
+- keywords: 2~3 short Korean keywords
+"""
                 response = self.model.generate_content(
                     prompt,
                     generation_config=GenerationConfig(
-                        response_mime_type="application/json",
-                        max_output_tokens=self.max_output_tokens
-                    )
+                        max_output_tokens=1024,
+                        temperature=0.2
+                    ),
+                    safety_settings=[
+                        SafetySetting(
+                            category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                            threshold=HarmBlockThreshold.BLOCK_ONLY_HIGH
+                        ),
+                        SafetySetting(
+                            category=HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                            threshold=HarmBlockThreshold.BLOCK_ONLY_HIGH
+                        ),
+                        SafetySetting(
+                            category=HarmCategory.HARM_CATEGORY_HARASSMENT,
+                            threshold=HarmBlockThreshold.BLOCK_ONLY_HIGH
+                        ),
+                        SafetySetting(
+                            category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                            threshold=HarmBlockThreshold.BLOCK_ONLY_HIGH
+                        ),
+                    ]
                 )
-                res_json = json.loads(response.text)
+                
+                # Robust JSON extraction
+                response_text = response.text.strip()
+                
+                # Debug Log
+                logger.info(f"[SSoT LLM Raw]: {response_text}")
+
+                # Try to extract JSON from response (handle markdown code blocks or plain text)
+                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                if json_match:
+                    response_text = json_match.group(0)
+                
+                res_json = json.loads(response_text)
                 return res_json.get("one_liner", fallback_text), res_json.get("keywords", fallback_keywords)
 
             except Exception as e:
-                logger.error(f"LLM Explanation failed: {e}")
+                logger.error(f"LLM Explanation failed: {e}. Raw Response: {response_text}")
                 return fallback_text, fallback_keywords
 
         return fallback_text, fallback_keywords
@@ -154,13 +210,15 @@ class SSoTExplainer:
 class SecurityExplainer:
     def __init__(self, mode="rule_only"):
         self.mode = mode # 'rule_only' or 'llm_summary'
-        self.max_output_tokens = int(os.getenv("SECURITY_EXPLAIN_LLM_MAX_TOKENS", 180))
+        self.max_output_tokens = int(os.getenv("SECURITY_EXPLAIN_LLM_MAX_TOKENS", 512))
         
         # Init Vertex AI if needed (Reusing existing init if possible, but safe to re-init)
         if self.mode == "llm_summary":
             try:
-                vertexai.init(project=settings.GCP_PROJECT_ID, location=settings.GCP_LOCATION)
-                self.model = GenerativeModel("gemini-1.5-pro-preview-0409") 
+                vertexai.init(project=settings.PROJECT_ID, location=settings.VERTEX_LOCATION)
+                model_name = os.getenv("EXPLAINER_LLM_MODEL", "gemini-2.5-flash")
+                self.model = GenerativeModel(model_name)
+                logger.info(f"Security Explainer using model: {model_name}")
             except Exception as e:
                 logger.warning(f"Vertex AI Init failed for Security Explainer: {e}. Fallback to rule_only.")
                 self.mode = "rule_only"
@@ -182,42 +240,79 @@ class SecurityExplainer:
 
         # 2. LLM Summary
         if self.mode == "llm_summary":
+            response_text = "N/A"
             try:
                 prompt = f"""
-                You are a Corporate Security Analyst.
-                Based on the following security signals, provide a ONE-LINE summary explaining why this document is classified as {security_level}.
-                
-                Security Level: {security_level}
-                Signals:
-                {json.dumps(top_signals, ensure_ascii=False)}
-                
-                Validation Rules:
-                1. Use ONLY the provided signals. Do NOT invent new facts.
-                2. If "sensitive_pattern" exists, mention the specific pattern type (e.g. RRN, Salary).
-                3. If "permission_cap" exists, mention the restriction reason.
-                
-                Output JSON format: {{ "one_liner": "...", "keywords": ["keyword1", "keyword2"], "risk_note": "Optional short note" }}
-                Korean language preferred for output.
-                """
+You are a Corporate Security Analyst.
+
+Task:
+Given the security_level and a list of security_signals, write a ONE-LINE Korean explanation for a UI card.
+
+Constraints:
+- Use ONLY the provided signals. Do NOT invent any facts.
+- Mention at most 2~3 strongest reasons (highest impact signals).
+- If any signal name indicates a sensitive pattern (e.g., RRN, Salary, Account), explicitly name that pattern.
+- If any signal indicates permission cap/restriction, mention it briefly.
+- Output MUST be Korean only.
+- Keep one_liner within 80 Korean characters.
+- Do not include markdown code blocks. Just raw JSON.
+
+Input:
+security_level = {security_level}
+security_signals (top) = {json.dumps(top_signals, ensure_ascii=False)}
+
+Output JSON ONLY (no markdown, no extra text):
+{{"one_liner":"...", "keywords":["...","..."], "risk_note":null}}
+- keywords: 2~3 short Korean keywords
+- risk_note: null unless there is a clear permission/exposure risk signal
+"""
                 response = self.model.generate_content(
                     prompt,
                     generation_config=GenerationConfig(
-                        response_mime_type="application/json",
-                        max_output_tokens=self.max_output_tokens
-                    )
+                        max_output_tokens=1024,
+                        temperature=0.2
+                    ),
+                    safety_settings=[
+                        SafetySetting(
+                            category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                            threshold=HarmBlockThreshold.BLOCK_ONLY_HIGH
+                        ),
+                        SafetySetting(
+                            category=HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                            threshold=HarmBlockThreshold.BLOCK_ONLY_HIGH
+                        ),
+                        SafetySetting(
+                            category=HarmCategory.HARM_CATEGORY_HARASSMENT,
+                            threshold=HarmBlockThreshold.BLOCK_ONLY_HIGH
+                        ),
+                        SafetySetting(
+                            category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                            threshold=HarmBlockThreshold.BLOCK_ONLY_HIGH
+                        ),
+                    ]
                 )
-                res_json = json.loads(response.text)
+                
+                # Robust JSON extraction
+                response_text = response.text.strip()
+                
+                # Debug Log
+                logger.info(f"[Security LLM Raw]: {response_text}")
+
+                # Try to extract JSON from response (handle markdown code blocks or plain text)
+                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                if json_match:
+                    response_text = json_match.group(0)
+                
+                res_json = json.loads(response_text)
                 return res_json.get("one_liner", fallback_text), res_json.get("keywords", fallback_keywords), "llm_summary"
 
             except Exception as e:
-                logger.error(f"LLM Security Explanation failed: {e}")
+                logger.error(f"LLM Security Explanation failed: {e}. Raw Response: {response_text}")
                 return fallback_text, fallback_keywords, "rule_only (fallback)"
 
         return fallback_text, fallback_keywords, "rule_only"
 
-import re
-
-# ... (Previous Imports)
+# --- Rule Engine (Legacy Wrapper) ---
 
 # ... (SSoTScorer and SSoTExplainer classes remain unchanged) ...
 
@@ -401,9 +496,27 @@ class PolicyClassifier:
         # Try fetch text sample first as V2 needs it for Raise rules
         text_sample = ""
         try:
-            chunks_snap = self.db.collection("chunks").where("doc_id", "==", doc_id).limit(1).get()
-            if chunks_snap:
-                text_sample = chunks_snap[0].to_dict().get("text_content", "")[:2000] # Increased for V2
+            # [Fix] chunks collection uses doc_id as document key, not a field.
+            # Text content is stored in GCS, need to load from there.
+            chunks_meta = self.db.collection("chunks").document(doc_id).get()
+            if chunks_meta.exists:
+                gcs_uri = chunks_meta.get("gcs_chunks_uri")
+                if gcs_uri:
+                    from google.cloud import storage
+                    bucket_name = getattr(settings, "GCS_BUCKET", f"{settings.PROJECT_ID}-docai-output")
+                    storage_client = storage.Client(project=settings.PROJECT_ID)
+                    blob_path = gcs_uri.replace(f"gs://{bucket_name}/", "")
+                    bucket = storage_client.bucket(bucket_name)
+                    blob = bucket.blob(blob_path)
+                    chunks_data = json.loads(blob.download_as_text())
+                    if isinstance(chunks_data, dict):
+                        chunks_data = chunks_data.get("chunks", [])
+                    # Get text from first few chunks for sampling
+                    text_parts = []
+                    for c in chunks_data[:3]:  # First 3 chunks
+                        if str(c.get("type", "text")).startswith(("text", "doc", "excel", "invoice")):
+                            text_parts.append(c.get("text", ""))
+                    text_sample = " ".join(text_parts)[:3000]  # Increased for V2 pattern matching
         except Exception as e:
             logger.warning(f"Failed to fetch text sample: {e}")
 

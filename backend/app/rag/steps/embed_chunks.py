@@ -124,7 +124,10 @@ class ChunkEmbedder:
         chunks_meta = self.db.collection("chunks").document(doc_id).get()
         if not chunks_meta.exists: return
         
-        chunks = self.load_json_from_gcs(chunks_meta.get("gcs_chunks_uri"))
+        chunks_data = self.load_json_from_gcs(chunks_meta.get("gcs_chunks_uri"))
+        if not chunks_data: return
+        
+        chunks = chunks_data.get("chunks", []) if isinstance(chunks_data, dict) else chunks_data
         if not chunks: return
         
         # [Feature] Load Graph Data for Context Injection
@@ -200,7 +203,7 @@ class ChunkEmbedder:
         }, merge=True)
         
         self.db.collection("profiles").document(doc_id).set({
-            "process_flags": {"embeddings": False}
+            "process_flags": {"embed": False}
         }, merge=True)
         
         logger.info(f"✅ [Embed] 임베딩 완료: {len(embedded_result)} vectors (with Graph Context)")

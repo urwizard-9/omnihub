@@ -86,11 +86,29 @@ class EntityExtractor:
         Output JSON:
         """
         try:
-            response = self.model.generate_content(prompt)
+            from vertexai.generative_models import HarmCategory, HarmBlockThreshold
+            
+            safety = {
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+            
+            # Use JSON Mode if supported
+            config = {"response_mime_type": "application/json"}
+            
+            response = self.model.generate_content(prompt, safety_settings=safety, generation_config=config)
+            
             raw_text = response.text.strip()
             if raw_text.startswith("```"):
                 raw_text = raw_text.strip("`").replace("json\n", "").replace("json", "")
             return json.loads(raw_text)
+            
+        except ValueError as ve:
+            # Content blocked or empty
+            logger.warning(f"LLM Extract Blocked/Empty: {ve}")
+            return {"entities": [], "relations": []}
         except Exception as e:
             logger.error(f"LLM Extract Fail: {e}")
             return {"entities": [], "relations": []}
@@ -101,8 +119,12 @@ class EntityExtractor:
         blob = self.bucket.blob(blob_path)
         try:
             content = blob.download_as_text()
-            return json.loads(content)
-        except Exception:
+            data = json.loads(content)
+            if isinstance(data, dict):
+                return data.get("chunks", [])
+            return data
+        except Exception as e:
+            logger.warning(f"Failed to load chunks from {chunks_uri}: {e}")
             return []
 
     def _normalize_name(self, name: str) -> str:
@@ -122,10 +144,15 @@ class EntityExtractor:
     def _is_valid_entity(self, name: str) -> bool:
         """후처리 필터: 불용어, 날짜 패턴, 길이 제한 등"""
         if not name: return False
+        name = name.strip()
         
-        # 1. 길이 제한 (2글자 미만 제외, 단 영문 대문자 약어 등은 예외일 수 있으나 일단 엄격하게)
-        # 한글 1글자("갑", "을", "법") 제외가 목적. 영문 "AI" 같은건 2글자라 통과.
-        if len(name) < 2: return False
+        # 1. 길이 제한 완화 (1글자 이상이면 통과시키되, 숫자/특수문자 단독인 경우 제외)
+        if len(name) < 1: return False
+        
+        # 1글자인 경우: 한글이나 알파벳인지 확인
+        if len(name) == 1:
+            if not re.match(r'[a-zA-Z가-힣]', name):
+                return False
         
         # 2. Stopwords
         if name in self.stopwords: return False
@@ -149,13 +176,19 @@ class EntityExtractor:
         (2) 문서 중간 1개
         (3) 문서 끝 1개
         (4) 길이가 긴 청크 1~2개
-        (5) 표/리스트로 추정되는 청크 1개 (Optional)
-        """
-        text_chunks = [c for c in chunks if c.get("type", "text") == "text"]
-        if not text_chunks: return []
         
-        n = len(text_chunks)
-        if n <= limit: return text_chunks
+        [Fix] 모든 타입의 청크를 허용합니다 (invoice_kv, table 등 포함)
+        """
+        # 1. 유효한 딕셔너리 형태의 청크만 필터링
+        valid_chunks = [c for c in chunks if isinstance(c, dict)]
+        
+        if not valid_chunks:
+             logger.warning(f"⚠️ No valid chunk objects found.")
+             return []
+        
+        n = len(valid_chunks)
+        # 전체 개수가 limit보다 적으면 전부 반환
+        if n <= limit: return valid_chunks
 
         selected_indices = set()
         
@@ -169,17 +202,27 @@ class EntityExtractor:
         # (3) End
         selected_indices.add(n - 1)
         
-        # (4) Longest (남은 자리만큼)
-        # 이미 선택된 것 제외하고 길이순 정렬
+        # (4) Heavy Content Selection
+        # 텍스트가 있으면 텍스트 길이, 없으면(구조화 데이터) 문자열 변환 길이 추정
+        def get_content_len(c):
+            t = c.get("text", "")
+            if t: return len(t)
+            # 텍스트가 없으면 JSON 덤프 길이로 추정 (정보량 측정)
+            return len(str(c))
+
         remaining_indices = [i for i in range(n) if i not in selected_indices]
-        sorted_by_len = sorted(remaining_indices, key=lambda i: len(text_chunks[i].get("text", "")), reverse=True)
+        sorted_by_len = sorted(remaining_indices, key=lambda i: get_content_len(valid_chunks[i]), reverse=True)
         
         slots_left = limit - len(selected_indices)
         for i in range(min(slots_left, len(sorted_by_len))):
             selected_indices.add(sorted_by_len[i])
             
+        # Fallback: 만약 선택된 것이 하나도 없다면 (로직상 희박하지만) 0번 강제 추가
+        if not selected_indices:
+            selected_indices.add(0)
+
         # 인덱스 순으로 정렬하여 반환
-        return [text_chunks[i] for i in sorted(list(selected_indices))]
+        return [valid_chunks[i] for i in sorted(list(selected_indices))]
 
     def process_single_document(self, doc_id: str):
         profile_ref = self.db.collection("profiles").document(doc_id).get()
@@ -193,12 +236,21 @@ class EntityExtractor:
         if not chunk_ref.exists: return
         
         chunks = self.load_chunks(chunk_ref.get("gcs_chunks_uri"))
-        if not chunks: return
+        if not chunks:
+             logger.warning(f"⚠️ [Entity] Docs loaded but chunks empty: {doc_id}")
+             return
 
-        # Selection Strategy (Improved)
+        # Selection Strategy (Fixed: Accept All Types)
         target_chunks = self._select_representative_chunks(chunks, limit=5)
         
-        if not target_chunks: return
+        if not target_chunks:
+            # Fallback: Should not happen due to fallback in select method, but double check
+            if chunks:
+                target_chunks = [chunks[0]]
+                logger.warning(f"⚠️ [Entity] Selection logic returned 0, forcing first chunk.")
+            else:
+                logger.warning(f"⚠️ [Entity] No target chunks selected for {doc_id}. Skipping.")
+                return
         
         # [Parallel Extraction]
         import concurrent.futures
@@ -208,9 +260,44 @@ class EntityExtractor:
         source_link = profile.get("source_link")
         
         def _process_chunk(chunk):
-            """Thread Worker Function"""
+            """Thread Worker Function: Handles Text Generation & Extraction"""
             text = chunk.get("text", "")
-            if not text: return None
+            
+            # [Fix] 텍스트가 없는 구조화된 청크(invoice_kv, items 등)를 문자열로 변환
+            if not text:
+                parts = []
+                # Invoice Fields
+                if "invoice_kv" in chunk and isinstance(chunk["invoice_kv"], dict):
+                    parts.append("[Invoice Fields]")
+                    for k, v in chunk["invoice_kv"].items():
+                        parts.append(f"{k}: {v}")
+                # Line Items
+                if "items" in chunk and isinstance(chunk["items"], list):
+                    parts.append("\n[Line Items]")
+                    for item in chunk["items"]:
+                        if isinstance(item, dict):
+                            item_str = ", ".join([f"{k}:{v}" for k,v in item.items()])
+                            parts.append(f"- {item_str}")
+                        else:
+                            parts.append(f"- {item}")
+                # Table Rows
+                if "type" in chunk and "row" in str(chunk["type"]): # excel_row etc
+                     # If text is present it would be handled above, but if strictly just fields
+                     pass
+                
+                # 강제로 문자열화 시도 (JSON Dump)
+                if not parts and chunk:
+                     # e.g. unknown structured chunk
+                     try:
+                         text = json.dumps(chunk, ensure_ascii=False)
+                     except:
+                         text = str(chunk)
+                else:
+                    text = "\n".join(parts)
+
+            if not text or len(text.strip()) < 5: 
+                return None
+
             # Chunk 단위 추출
             return self.extract(text)
 
@@ -227,6 +314,10 @@ class EntityExtractor:
                     
                     # A. Snippet 생성 (실제 텍스트 기반)
                     chunk_text = chunk_data.get("text", "")
+                    if not chunk_text:
+                        # 텍스트가 없어서 생성한 경우, 해당 내용을 Snippet으로 사용
+                        chunk_text = "Structured Data extracted as text."
+                    
                     # 앞부분 300자 정도, 줄바꿈 정리
                     snippet_raw = chunk_text[:300].replace("\n", " ")
                     snippet = f"{snippet_raw}..." if len(chunk_text) > 300 else snippet_raw
@@ -242,21 +333,22 @@ class EntityExtractor:
                         # B. 정규화 키 추가
                         name = ent.get("name", "")
                         
-                        # [NEW] 후처리 필터 적용
+                        # [NEW] 후처리 필터 적용 (완화됨)
                         if not self._is_valid_entity(name):
                             continue
                             
                         norm_name = self._normalize_name(name)
                         ent["normalized_name"] = norm_name
+                        # concept_key should be unique identifier
                         ent["concept_key"] = f"{ent.get('type', 'UNKNOWN')}:{norm_name}"
-                        ent["mention_count"] = 1 # 기본 1, 추후 merge시 합산 가능
-
+                        ent["mention_count"] = 1 # 기본 1
+                        
                         ent["evidence"] = [{
                             "doc_id": doc_id,
                             "chunk_id": chunk_data.get("chunk_id"),
                             "page": chunk_data.get("page_start_no"),
                             "source_link": source_link,
-                            "snippet": snippet, # [Fix] 실제 텍스트 사용
+                            "snippet": snippet, 
                             "span": None
                         }]
                         final_entities.append(ent)
@@ -266,7 +358,7 @@ class EntityExtractor:
                         all_relations.append(rel)
                         
                 except Exception as e:
-                    logger.error(f"Chunk processing failed (chunk_id={chunk_data.get('chunk_id')}): {e}")
+                    logger.error(f"Chunk processing failed (chunk_id={chunk_data.get('chunk_id')}): {e}", exc_info=True)
 
         logger.info(f"⚡ [Entity] 병렬 추출 완료: {len(target_chunks)} chunks -> {len(final_entities)} entities")
 

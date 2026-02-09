@@ -163,7 +163,9 @@ class ProfileBuilder:
             "tenant_id": self.tenant_id,
             "engagement_id": self.engagement_id,
             "active": True,
-            "review_status": "PENDING"  # [Changed] Default to PENDING to trigger Approval Workflow
+            "review_status": "APPROVED", # [Changed] Auto-approve all docs
+            "graph_visible": True,
+            "searchable": True
         }, merge=True)
         
         logger.info(f"✅ [Profile] 생성 및 백업 완료: {doc_id}")
