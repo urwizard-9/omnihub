@@ -77,7 +77,7 @@ const MainLayout: React.FC = () => {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-[#09090b] text-slate-200 overflow-hidden font-sans selection:bg-indigo-500/30 selection:text-indigo-200 relative">
+    <div className="h-screen flex flex-col bg-[#09090b] text-slate-200 overflow-hidden font-sans font-light break-keep selection:bg-indigo-500/30 selection:text-indigo-200 relative">
 
       {isGlobalLoading && <GlobalLoader />}
       {globalError && <ErrorModal message={globalError} onClose={dismissError} />}

@@ -1,9 +1,8 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as d3 from 'd3';
 import { AIService } from '../../services/aiService';
-import { groupDocsByVersion, getVersionRangeText, extractVersionMeta } from '../../services/dataService';
 import { DocRecord } from '../../types';
-import { Network, Zap, RefreshCw, Minus, Plus, Target, Crosshair, Layers, FolderOpen } from 'lucide-react';
+import { Network, Zap, RefreshCw, Minus, Plus, Target, Crosshair, FolderOpen } from 'lucide-react';
 import { useOmniHub } from '../../context/OmniHubContext';
 
 // ========== 타입 정의 ==========
@@ -14,14 +13,13 @@ interface KnowledgeGraphProps {
 interface SimulationNode extends d3.SimulationNodeDatum {
     id: string;
     label?: string;
-    group?: 'document' | 'concept' | 'group' | 'virtualPath';
+    group?: 'document' | 'concept' | 'virtualPath';
     type?: string;
     mentions?: number;
     size?: number;
     degree?: number;
     // 추가 속성
     data?: any; // 원본 DocRecord 등
-    isVersionChild?: boolean;
 }
 
 interface SimulationLink extends d3.SimulationLinkDatum<SimulationNode> {
@@ -55,7 +53,6 @@ const CYBER_COLORS = {
 };
 
 const getNodeNeonColor = (d: SimulationNode): string => {
-    if (d.group === 'group') return CYBER_COLORS.neon.group;
     if (d.group === 'document') {
         if (d.data?.status === 'pending') return CYBER_COLORS.neon.amber;
         return CYBER_COLORS.neon.emerald;
@@ -73,17 +70,14 @@ const getNodeNeonColor = (d: SimulationNode): string => {
 };
 
 const getNodeRadius = (d: SimulationNode): number => {
-    if (d.group === 'group') return 24;
     const baseDegree = d.degree || 1;
     if (d.group === 'document') {
-        if (d.isVersionChild) return 10;
         return Math.min(5 + Math.sqrt(baseDegree) * 2, 14);
     }
     return Math.min(8 + Math.sqrt(baseDegree) * 3, 32);
 };
 
 const getFontSize = (d: SimulationNode): number => {
-    if (d.group === 'group') return 12;
     const degree = d.degree || 1;
     if (d.group === 'document') return 9;
     return Math.min(9 + Math.sqrt(degree) * 1.5, 14);
@@ -108,8 +102,6 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ onDocClick }) => {
     // UI State
     const [loading, setLoading] = useState(false);
     const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
-    const [groupByVersion, setGroupByVersion] = useState(true);
-    const [expandedGroups, setExpandedGroups] = useState<string[]>([]);
 
     // New Features State
     const [viewMode, setViewMode] = useState<'default' | 'local'>('default');
@@ -171,7 +163,7 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ onDocClick }) => {
         return () => observer.disconnect();
     }, []);
 
-    // ========== 데이터 그룹화 로직 (Memoized) ==========
+    // ========== 데이터 필터링 및 가공 ==========
     const { nodes: groupedNodes, links: groupedLinks } = useMemo(() => {
         let filteredNodes = rawNodes;
         let filteredLinks = rawLinks;
@@ -218,42 +210,26 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ onDocClick }) => {
             });
         }
 
-        if (!groupByVersion) {
-            return { nodes: filteredNodes, links: filteredLinks };
-        }
-
-        // 3. Grouping & Virtual Paths
-        const docNodes: DocRecord[] = [];
-        const otherNodes: SimulationNode[] = [];
-        const docNodeMap: Record<string, SimulationNode> = {};
+        // 3. Virtual Paths (Folders)
+        // Grouping logic removed, but keeping virtual folders if doc has folderPath
         const folderPaths = new Set<string>();
+        const finalNodes: SimulationNode[] = [...filteredNodes];
+        const linkDedup = new Set<string>();
+        const finalLinks: SimulationLink[] = [...filteredLinks];
 
+        // Collect folders from visible docs
         filteredNodes.forEach(n => {
             if (n.group === 'document') {
-                const rawData = n.data || {};
-                const safeName = rawData.name || n.label || n.id || "Untitled";
-                const doc: DocRecord = {
-                    ...rawData,
-                    id: n.id,
-                    name: safeName,
-                    // ... (rest of fields are safety-filled via n.data usually)
-                    folderPath: rawData.folderPath || '',
-                    security: rawData.security || 'medium'
-                } as any; // Cast for brevity, real app has full object
-
-                docNodes.push(doc);
-                docNodeMap[n.id] = n;
-                if (doc.folderPath) folderPaths.add(doc.folderPath);
-            } else {
-                otherNodes.push(n);
+                const path = n.data?.folderPath;
+                if (path) folderPaths.add(path);
             }
         });
 
-        // 3.1. Create Virtual Path Nodes
+        // Create Folder Nodes
         const folderNodes: SimulationNode[] = [];
-        // Optional: Create hierarchy (parent folders). For now, just leaf folders mentioned in docs.
         folderPaths.forEach(path => {
             const folderId = `folder:${path}`;
+            // Avoid duplicate pushing if folder node logic existed in rawNodes (it doesn't typically)
             folderNodes.push({
                 id: folderId,
                 label: path.split('/').pop() || path,
@@ -262,119 +238,36 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ onDocClick }) => {
                 degree: 0
             });
         });
+        finalNodes.push(...folderNodes);
 
-        // 3.2. Group Docs
-        const { groups, singles } = groupDocsByVersion(docNodes);
-        const finalNodes: SimulationNode[] = [...otherNodes, ...folderNodes];
-        const docIdToGroupId: Record<string, string> = {};
-
-        // Singles
-        singles.forEach(d => {
-            finalNodes.push({
-                ...docNodeMap[d.id],
-                id: d.id, label: d.name, group: 'document', data: d
-            });
-            docIdToGroupId[d.id] = d.id;
-        });
-
-        // Groups
-        Object.entries(groups).forEach(([groupKey, docList]) => {
-            const groupId = `group:${groupKey}`;
-            const isExpanded = expandedGroups.includes(groupKey);
-            const representative = docList[0];
-            const versionText = getVersionRangeText(docList);
-            const hasSSOT = docList.some(d => d.ssotRating);
-
-            const groupNode: SimulationNode = {
-                id: groupId,
-                label: isExpanded ? `📚 ${groupKey}` : `📚 ${groupKey} (x${docList.length})`,
-                group: 'group',
-                data: { groupKey, count: docList.length, representative, versionRangeText: versionText, hasSSOT, isExpanded, folderPath: representative.folderPath },
-                x: docNodeMap[representative.id]?.x,
-                y: docNodeMap[representative.id]?.y,
-                degree: docList.length
-            };
-            finalNodes.push(groupNode);
-
-            docList.forEach(d => docIdToGroupId[d.id] = groupId);
-
-            if (isExpanded) {
-                docList.slice(0, 12).forEach((d, i) => {
-                    const meta = extractVersionMeta(d.name);
-                    let label = versionText; // Simplify
-                    if (meta.versionNumber) label = `v${meta.versionNumber}`;
-
-                    finalNodes.push({
-                        id: d.id,
-                        label: label,
-                        group: 'document',
-                        isVersionChild: true,
-                        data: d,
-                        x: (groupNode.x || 0) + Math.cos(i) * 30,
-                        y: (groupNode.y || 0) + Math.sin(i) * 30
-                    });
-                });
-            }
-        });
-
-        // 3.3. Process Links (Original + Virtual Path Links)
-        const finalLinks: SimulationLink[] = [];
-        const linkDedup = new Set<string>();
-
-        // Original Links
-        filteredLinks.forEach(link => {
-            const sourceId = typeof link.source === 'string' ? link.source : (link.source as any).id;
-            const targetId = typeof link.target === 'string' ? link.target : (link.target as any).id;
-
-            const newSource = docIdToGroupId[sourceId] || sourceId;
-            const newTarget = docIdToGroupId[targetId] || targetId;
-
-            if (newSource !== newTarget && !linkDedup.has(`${newSource}-${newTarget}`)) {
-                linkDedup.add(`${newSource}-${newTarget}`);
-                finalLinks.push({
-                    source: newSource, target: newTarget,
-                    type: 'related',
-                    rank_score: link.rank_score
-                });
-            }
-        });
-
-        // Group -> Child Links
-        Object.entries(groups).forEach(([groupKey, docList]) => {
-            if (expandedGroups.includes(groupKey)) {
-                const groupId = `group:${groupKey}`;
-                docList.slice(0, 12).forEach(d => {
-                    finalLinks.push({ source: groupId, target: d.id, type: 'version' });
-                });
-            }
-        });
-
-        // Feature: Link Docs/Groups to Virtual Folders
-        // Iterate Nodes to find docs/groups with folderPath and link to folderNode
-        // We do this by iterating finalNodes to see if they have data.folderPath
-        finalNodes.forEach(n => {
-            if ((n.group === 'document' && !n.isVersionChild) || n.group === 'group') {
+        // Link Docs to Folders
+        filteredNodes.forEach(n => {
+            if (n.group === 'document') {
                 const fPath = n.data?.folderPath;
                 if (fPath) {
                     const folderId = `folder:${fPath}`;
-                    // Check if folder node exists (it should)
-                    if (folderNodes.find(fn => fn.id === folderId)) {
-                        const key = `${folderId}-${n.id}`;
-                        if (!linkDedup.has(key)) {
-                            linkDedup.add(key);
-                            finalLinks.push({
-                                source: folderId, target: n.id,
-                                type: 'folder_contain',
-                                rank_score: 1.0 // Strong link
-                            });
-                        }
+                    const key = `${folderId}-${n.id}`;
+                    if (!linkDedup.has(key)) {
+                        linkDedup.add(key);
+                        finalLinks.push({
+                            source: folderId, target: n.id,
+                            type: 'folder_contain',
+                            rank_score: 1.0 // Strong link
+                        });
                     }
                 }
             }
         });
 
+        // Initialize linkDedup with existing links to filter duplicates if any
+        filteredLinks.forEach(l => {
+            const s = typeof l.source === 'string' ? l.source : (l.source as any).id;
+            const t = typeof l.target === 'string' ? l.target : (l.target as any).id;
+            linkDedup.add(`${s}-${t}`);
+        });
+
         return { nodes: finalNodes, links: finalLinks };
-    }, [rawNodes, rawLinks, groupByVersion, expandedGroups, showRestricted, viewMode, selectedNodeId]);
+    }, [rawNodes, rawLinks, showRestricted, viewMode, selectedNodeId]);
 
     // Stats Effect
     useEffect(() => {
@@ -429,14 +322,11 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ onDocClick }) => {
                 })
                 .strength(d => d.type === 'version' ? 1 : 0.3)) // Strength kept from legacy
             .force("charge", d3.forceManyBody().strength(d => {
-                if ((d as SimulationNode).isVersionChild) return -100;
                 return effectiveMode === 'default' ? -400 : -300;
             }))
             .force("collide", d3.forceCollide().radius(d => {
                 const node = d as SimulationNode;
-                if (node.group === 'group') return 55;
                 if (node.group === 'concept') return 50;
-                if (node.isVersionChild) return 25;
                 if (node.group === 'virtualPath') return 60;
                 return 35; // Default doc
             }).strength(0.7))
@@ -494,24 +384,20 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ onDocClick }) => {
             const color = getNodeNeonColor(d);
 
             // Glow BG
-            el.append("circle").attr("r", r + 5).attr("fill", color).attr("opacity", 0.15).attr("filter", `url(#glow-${d.group === 'group' ? 'group' : 'cyan'})`);
+            el.append("circle").attr("r", r + 5).attr("fill", color).attr("opacity", 0.15).attr("filter", `url(#glow-cyan)`);
 
             // Core
             el.append("circle").attr("r", r).attr("fill", `color-mix(in srgb, ${color} 20%, ${CYBER_COLORS.background})`)
-                .attr("stroke", color).attr("stroke-width", d.group === 'group' ? 2 : 1.5);
+                .attr("stroke", color).attr("stroke-width", 1.5);
 
             // Icon / Text
-            if (d.group === 'group') {
-                el.append("text").text(d.data?.isExpanded ? "📂" : "📚").attr("dy", 6).attr("text-anchor", "middle").attr("font-size", "16px");
-                if (!d.data?.isExpanded && d.data?.versionRangeText) {
-                    el.append("text").text(d.data.versionRangeText).attr("dy", 20).attr("text-anchor", "middle").attr("fill", CYBER_COLORS.textMuted).attr("font-size", "8px");
-                }
-            } else if (d.group === 'virtualPath') {
+            if (d.group === 'virtualPath') {
                 el.append("text").text("📂").attr("dy", 5).attr("text-anchor", "middle").attr("font-size", "14px");
             }
 
             // SSOT Star
-            if ((d.group === 'document' && d.data?.ssotRating) || (d.group === 'group' && d.data?.hasSSOT)) {
+            const hasSSOT = (d.group === 'document' && (d.data?.ssot_level === 'Gold' || d.data?.ssotRating));
+            if (hasSSOT) {
                 el.append("text").text("★").attr("x", 8).attr("y", -8).attr("fill", "#fbbf24").attr("font-size", "12px");
             }
         });
@@ -527,9 +413,7 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ onDocClick }) => {
             .style("pointer-events", "none")
             .attr("text-shadow", "0 2px 4px rgba(0,0,0,0.8)")
             .style("opacity", d => {
-                // Concepts always visible
-                if (d.group === 'concept' || d.group === 'group') return 1;
-                // Docs hidden by default (shown on hover/zoom)
+                if (d.group === 'concept') return 1;
                 return 0;
             })
             .attr("class", d => d.group === 'document' ? "doc-label" : "concept-label");
@@ -575,7 +459,7 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ onDocClick }) => {
                     .attr("stroke-opacity", l => l.type === 'version' ? 0.6 : 0.3)
                     .attr("stroke-width", l => l.type === 'version' ? 1.5 : (0.5 + (l.rank_score || 0) * 2));
                 label.transition().duration(300).style("opacity", d => {
-                    if (d.group === 'concept' || d.group === 'group') return 1;
+                    if (d.group === 'concept') return 1;
                     return 0; // Restore default hidden state for docs
                 });
             });
@@ -585,10 +469,7 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ onDocClick }) => {
             e.stopPropagation();
             setSelectedNodeId(d.id);
 
-            if (d.group === 'group') {
-                const key = d.data.groupKey;
-                setExpandedGroups(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]);
-            } else if (d.group === 'document') {
+            if (d.group === 'document') {
                 if (onDocClick) onDocClick(d.id);
             } else if (d.group === 'concept') {
                 // [Modified] 3-Hop Cascade Subgraph Expansion
@@ -732,13 +613,6 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ onDocClick }) => {
 
                     <div className="flex items-center gap-2">
                         <button
-                            onClick={() => setGroupByVersion(!groupByVersion)}
-                            className={`p-1.5 rounded-md transition-all flex items-center gap-1.5 text-[10px] font-bold ${groupByVersion ? 'bg-indigo-600/80 text-white' : 'text-slate-400 hover:bg-white/10'}`}
-                        >
-                            <Layers size={12} />
-                            Versioning
-                        </button>
-                        <button
                             onClick={() => setShowRestricted(!showRestricted)}
                             className={`p-1.5 rounded-md transition-all flex items-center gap-1.5 text-[10px] font-bold ${showRestricted ? 'bg-red-900/50 text-red-200 border border-red-500/30' : 'text-slate-400 hover:bg-white/10'}`}
                         >
@@ -761,7 +635,7 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ onDocClick }) => {
             <div className="flex-1 w-full h-full z-10">
                 <svg ref={svgRef} className="w-full h-full block" />
             </div>
-        </div>
+        </div >
     );
 };
 

@@ -119,11 +119,11 @@ const DocDetailDrawer: React.FC<Props> = ({ docId, onClose }) => {
     const handleApprove = async () => {
         try {
             setActionLoading(true);
-            await DocService.updateDocStatus(docId, 'approved');
+            await DocService.updateDocStatus(docId, 'APPROVED');
             addLog(`문서 승인됨 -> ${doc?.title}`, 'INFO');
 
-            updateDoc(docId, { status: 'approved' }); // Reflect in Context/Graph
-            setDoc(prev => (prev ? { ...prev, review_status: 'approved' } : null));
+            updateDoc(docId, { status: 'APPROVED' }); // Reflect in Context/Graph
+            setDoc(prev => (prev ? { ...prev, review_status: 'APPROVED' } : null));
         } catch (err) {
             console.error("Approve Error:", err);
             addLog(`승인 실패 -> ${err}`, 'ERROR');
@@ -136,10 +136,10 @@ const DocDetailDrawer: React.FC<Props> = ({ docId, onClose }) => {
         if (!rejectReason.trim()) return;
         try {
             setActionLoading(true);
-            await DocService.updateDocStatus(docId, 'rejected', rejectReason);
+            await DocService.updateDocStatus(docId, 'REJECTED', rejectReason);
             addLog(`문서 반려됨 -> ${doc?.title}`, 'WARN');
-            updateDoc(docId, { status: 'rejected' });
-            setDoc(prev => (prev ? { ...prev, review_status: 'rejected' } : null));
+            updateDoc(docId, { status: 'REJECTED' });
+            setDoc(prev => (prev ? { ...prev, review_status: 'REJECTED' } : null));
             setRejectMode(false);
         } catch (err) {
             console.error("Reject Error:", err);
@@ -170,9 +170,9 @@ const DocDetailDrawer: React.FC<Props> = ({ docId, onClose }) => {
         );
     }
 
-    const isPending = doc.review_status === 'pending';
-    const isApproved = doc.review_status === 'approved';
-    const isRejected = doc.review_status === 'rejected';
+    const isPending = doc.review_status === 'PENDING';
+    const isApproved = doc.review_status === 'APPROVED';
+    const isRejected = doc.review_status === 'REJECTED';
 
     return (
         <div className="absolute top-6 bottom-6 right-6 w-[420px] bg-[#050508]/85 backdrop-blur-2xl border border-white/10 shadow-[0_0_60px_rgba(0,0,0,0.7)] z-40 flex flex-col rounded-2xl overflow-hidden ring-1 ring-white/5 animate-in slide-in-from-right-8 duration-500 group">

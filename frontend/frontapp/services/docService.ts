@@ -50,7 +50,7 @@ export const DocService = {
     },
 
     // 2. Update Document Status (Approve/Reject)
-    updateDocStatus: async (docId: string, status: 'approved' | 'rejected', reason?: string): Promise<any> => {
+    updateDocStatus: async (docId: string, status: 'APPROVED' | 'REJECTED', reason?: string): Promise<any> => {
         const res = await fetch(`${API_BASE_URL}/api/docs/${docId}/status`, {
             method: 'PATCH',
             headers: {

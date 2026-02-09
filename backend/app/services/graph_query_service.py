@@ -117,7 +117,8 @@ class GraphQueryService:
                             "label": td.get("title", doc_id), # Title pre-injected
                             "group": "document",
                             "type": "pdf",
-                            "size": 1
+                            "size": 1,
+                            "ssot_level": td.get("ssot_level")  # [New] For SSOT Star
                         })
                         node_ids.add(doc_id)
                     
@@ -181,7 +182,8 @@ class GraphQueryService:
                         "group": "concept",
                         "type": c.get("concept_type", "OTHERS"),
                         "label": c.get("concept_name", cid),
-                        "size": c.get("mentions", 1)
+                        "size": c.get("mentions", 1),
+                        "ssot_level": c.get("ssot_level")  # [New] For SSOT Star
                     })
                     node_ids.add(cid)
                     edges.append({
@@ -199,7 +201,8 @@ class GraphQueryService:
                     if not did or did in node_ids: continue
                     nodes.append({
                         "id": did, "group": "document", "type": "pdf",
-                        "label": td.get("title", did)
+                        "label": td.get("title", did),
+                        "ssot_level": td.get("ssot_level")  # [New] For SSOT Star
                     })
                     node_ids.add(did)
                     edges.append({
@@ -252,7 +255,8 @@ class GraphQueryService:
                 "label": label or nid,
                 "group": group,
                 "type": ntype,
-                "size": size
+                "size": size,
+                "ssot_level": None  # Placeholder, set per-node if available
             })
             node_ids.add(nid)
 

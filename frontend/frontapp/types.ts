@@ -38,7 +38,7 @@ export interface DocRecord {
   aiSummary3: string[]; // 3-line summary
   textExcerpt: string; // 2~4 sentence snippet
   conceptIds: string[]; // Connected concept IDs for graph
-  status: 'idle' | 'pending' | 'approved' | 'rejected';
+  status: 'idle' | 'pending' | 'approved' | 'rejected' | 'PENDING' | 'APPROVED' | 'REJECTED';
   ssotRating?: 'gold' | 'silver'; // Optional property for Research context
   relatedFolderPaths: string[]; // For Actual Mode 3-hop traversal (logical links)
 }
