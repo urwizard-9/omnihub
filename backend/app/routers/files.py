@@ -12,6 +12,8 @@ from typing import Optional
 
 router = APIRouter()
 
+
+
 def get_db():
     return get_firestore_client()
 

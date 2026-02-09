@@ -22,10 +22,12 @@ import os
 app = FastAPI(title="OmniHub Backend API")
 
 # 1. CORS 설정 (가장 먼저 추가)
-# 로컬 HTML 파일에서 API를 호출하려면 필수입니다.
+origins_env = os.getenv("CORS_ALLOW_ORIGINS", "*")
+origins = [origin.strip() for origin in origins_env.split(",")]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],      # 모든 출처 허용 (보안을 위해 나중엔 프론트엔드 도메인만 허용해야 함)
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],      # 모든 HTTP 메서드 허용 (GET, POST, OPTIONS 등)
     allow_headers=["*"],      # 모든 헤더 허용 (Authorization 등)
@@ -49,6 +51,7 @@ app.include_router(ingest.router)           # Drive Ingestion
 app.include_router(rag_search.router)       # RAG API (was rag_api)
 app.include_router(graph_api.router)
 app.include_router(tree_api.router)
+app.include_router(tree_api.legacy_router)  # [Legacy] /files/virtual-tree 지원
 app.include_router(card_docs_api.router)
 
 # [AS-IS] Restore potentially missing routers from previous version

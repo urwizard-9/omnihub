@@ -8,6 +8,9 @@ from app.core.gcp_clients import get_firestore_client
 logger = logging.getLogger("TreeAPI")
 router = APIRouter(prefix="/api/tree", tags=["Tree"])
 
+# [Legacy Support] 백엔드 호환성을 위해 구버전 경로도 지원
+legacy_router = APIRouter(tags=["Tree-Legacy"])
+
 DEFAULT_LIMIT = int(os.getenv("TREE_PAGE_SIZE_DEFAULT", 100))
 MAX_LIMIT = int(os.getenv("TREE_PAGE_SIZE_MAX", 300))
 
@@ -130,6 +133,12 @@ async def get_full_tree(request: Request):
         
     except Exception as e:
          raise HTTPException(status_code=500, detail=f"Tree Build Error: {str(e)}")
+
+# [Legacy Support] 프론트엔드 호환성을 위한 구버전 경로
+@legacy_router.get("/files/virtual-tree")
+async def get_virtual_tree_legacy(request: Request):
+    """프론트엔드가 /files/virtual-tree를 호출하면 /api/tree/full과 동일한 결과 반환"""
+    return await get_full_tree(request)
 
 @router.get("")
 async def get_tree_items(
