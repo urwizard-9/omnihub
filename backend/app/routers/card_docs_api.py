@@ -43,7 +43,7 @@ async def get_doc_detail(request: Request, doc_id: str):
     if detailed_card:
         embedding_evidence = detailed_card.get("card_evidence", [])
 
-    return {
+    response = {
         "doc_id": doc_id,
         "title": doc.get("title"),
         "folder_path": doc.get("folder_path"),
@@ -58,9 +58,25 @@ async def get_doc_detail(request: Request, doc_id: str):
             "security_level": doc.get("security_level"),
             "ssot_level": doc.get("ssot_level")
         },
+
+        # New SSOT Fields (Top-Level & Detailed)
+        "ssot_score": doc.get("ssot_score"),
+        "ssot_explain": doc.get("ssot_explain"),
+        "ssot_signals": [], # Default empty
+
         
         "concepts": doc.get("top_concepts", []),
         
         # evidence: Card 요약의 근거 (페이지 번호 등)
-        "evidence": embedding_evidence 
+        "evidence": embedding_evidence
     }
+
+    # Fetch Detailed Signals (Optional but useful for Drawer)
+    policy_detail = repo.get_doc_policy(doc_id)
+    if policy_detail and "ssot_signals" in policy_detail:
+        # Sort by impact
+        signals = policy_detail["ssot_signals"]
+        sorted_signals = sorted(signals, key=lambda x: abs(x.get('delta', 0)), reverse=True)
+        response["ssot_signals"] = sorted_signals[:8]
+        
+    return response

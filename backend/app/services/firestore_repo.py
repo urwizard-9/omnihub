@@ -99,6 +99,23 @@ class FirestoreRepo:
         except Exception as e:
             logger.warning(f"Profile fetch failed for {doc_id}: {e}")
         
+        # [New] Ensure SSOT fields are present (from documents collection)
+        # They should already be in 'data' if classify_doc_policy.py ran successfully.
+        # Explicit keys to ensure API contract:
+        # data.setdefault("ssot_score", 50) # Optional default? Or None? Let's leave as is.
+        
+        return data
+
+    def get_doc_policy(self, doc_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch detailed policy info including SSOT signals"""
+        doc_ref = self.db.collection("policies").document(doc_id).get()
+        if not doc_ref.exists:
+            return None
+            
+        data = doc_ref.to_dict()
+        if not self._scope_check(data):
+            return None
+            
         return data
 
     def list_documents(self, 
