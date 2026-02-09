@@ -8,8 +8,27 @@
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <!-- Google Identity Services -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;700&family=Noto+Sans+KR:wght@100;300;400;500;700;900&display=swap" rel="stylesheet">
+  
   <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Noto Sans KR"', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'monospace'],
+          },
+        },
+      },
+    }
+  </script>
   <style>
+    .break-keep {
+      word-break: keep-all;
+    }
     /* Custom scrollbar for log panel */
     .scrollbar-thin::-webkit-scrollbar {
       width: 6px;
@@ -43,7 +62,7 @@
   }
 }
 </script>
-  <script type="module" crossorigin src="/assets/index-BO0NL5Y0.js"></script>
+  <script type="module" crossorigin src="/assets/index-D_WAguee.js"></script>
 </head>
 
 <body>
