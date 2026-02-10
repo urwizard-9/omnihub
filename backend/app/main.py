@@ -1,0 +1,80 @@
+# Load environment variables FIRST before any other imports
+from dotenv import load_dotenv
+load_dotenv()
+
+from fastapi import FastAPI
+from app.routers import (
+    files, drive_webhook, auth, admin, ingest, 
+    rag_search, tree_api, graph_api, card_docs_api, 
+    docs_status_api, download_api, risk_api # [AS-IS] Preserved AI Routers
+)
+from app.routers.auth_context import AuthContextMiddleware
+from fastapi.responses import PlainTextResponse # 텍스트 응답용
+
+from starlette.middleware.sessions import SessionMiddleware
+from fastapi.middleware.cors import CORSMiddleware
+from app.core.config import settings
+
+# [Frontend] Serve Static Files
+from fastapi.staticfiles import StaticFiles
+import os
+
+app = FastAPI(title="OmniHub Backend API")
+
+# 1. CORS 설정 (가장 먼저 추가)
+# 로컬 HTML 파일에서 API를 호출하려면 필수입니다.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],      # 모든 출처 허용 (보안을 위해 나중엔 프론트엔드 도메인만 허용해야 함)
+    allow_credentials=True,
+    allow_methods=["*"],      # 모든 HTTP 메서드 허용 (GET, POST, OPTIONS 등)
+    allow_headers=["*"],      # 모든 헤더 허용 (Authorization 등)
+)
+
+# 2. Authlib을 위한 세션 미들웨어 추가
+app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)
+
+# 3. AI-A Auth Context Middleware (Bearer Token -> AuthContext 통역기)
+app.add_middleware(AuthContextMiddleware)
+
+
+# 라우터 등록
+app.include_router(auth.router)           # 인증 라우터 등록
+app.include_router(drive_webhook.router)
+app.include_router(admin.router)            # Admin APIS
+app.include_router(ingest.router)           # Drive Ingestion
+
+# --- AI-A Routers ---
+# [Fix] Imported from app.routers (mapped from user request)
+app.include_router(rag_search.router)       # RAG API (was rag_api)
+app.include_router(graph_api.router)
+app.include_router(tree_api.router)
+app.include_router(tree_api.legacy_router)  # [Legacy] /files/virtual-tree 지원
+app.include_router(card_docs_api.router)
+
+# [AS-IS] Restore potentially missing routers from previous version
+app.include_router(docs_status_api.router)
+app.include_router(download_api.router)
+app.include_router(risk_api.router) # [Added] Security Dashboard API
+# --------------------
+
+app.include_router(files.router)            # 지금 테스트용
+
+
+#Google 웹사이트 소유권 확인용
+@app.get("/google55f35d8e589dce80.html", response_class=PlainTextResponse)
+def google_verification():
+    return "google-site-verification: google55f35d8e589dce80.html"
+
+#health check (API only)
+@app.get("/api/health")
+def health_check():
+    return {"status": "ok", "service": "OmniHub Backend"}
+
+
+# Create static dir if not exists
+if not os.path.exists("static"):
+    os.makedirs("static")
+
+# Mount React App at Root
+app.mount("/", StaticFiles(directory="static", html=True), name="static")

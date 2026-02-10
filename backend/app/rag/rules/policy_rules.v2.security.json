@@ -1,0 +1,70 @@
+{
+    "rule_version": "sec.v2.0",
+    "security_base_rules": [
+        {
+            "pattern": "표준서식|전사공유|가이드|매뉴얼",
+            "security": "Medium",
+            "description": "Standard Templates & Guides (Company Wide)"
+        },
+        {
+            "pattern": "고객|Engagement|감사|세무|프로젝트 산출물",
+            "security": "High",
+            "description": "Client Engagement & Audit Deliverables"
+        },
+        {
+            "pattern": "시장|경제|동향|리서치",
+            "security": "Low",
+            "description": "Market Research & Trends"
+        }
+    ],
+    "security_raise_rules": [
+        {
+            "pattern": "\\d{6}-[1-4]\\d{6}",
+            "type": "regex",
+            "security_target": "High",
+            "description": "Resident Registration Number (RRN)"
+        },
+        {
+            "pattern": "\\d{3}-\\d{2}-\\d{5}",
+            "type": "regex",
+            "security_target": "High",
+            "description": "Business Registration Number (BRN)"
+        },
+        {
+            "pattern": "\\d{3,6}-\\d{2,6}-\\d{3,6}",
+            "type": "regex",
+            "security_target": "High",
+            "description": "Bank Account Pattern"
+        },
+        {
+            "pattern": "급여|연봉|인사평가|징계|채용",
+            "type": "keyword",
+            "security_target": "High",
+            "description": "HR Sensitive (Salary/Eval/Hiring)"
+        },
+        {
+            "pattern": "NDA|비밀유지|대외비|기밀",
+            "type": "keyword",
+            "security_target": "High",
+            "description": "Confidentiality Terms"
+        },
+        {
+            "pattern": "감사조서|세무신고|원장|재무제표|결산|조정",
+            "type": "keyword",
+            "security_target": "High",
+            "description": "Financial & Tax Records"
+        }
+    ],
+    "security_cap_rules": [
+        {
+            "condition": "anyone_can_read",
+            "security_max": "Medium",
+            "description": "Broad Access Permission"
+        },
+        {
+            "condition": "external_share",
+            "security_max": "Medium",
+            "description": "Shared with External Domain"
+        }
+    ]
+}
