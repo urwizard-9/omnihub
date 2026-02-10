@@ -40,6 +40,7 @@ async def download_document(
     current_user: UserSchema = Depends(get_current_user)
 ):
     # 1. 문서 조회
+    # [Fix] 500 & 404 Error: Tenant ID Mismatch
     mw_auth_ctx = getattr(request.state, "auth_ctx", None)
     tenant_id = getattr(mw_auth_ctx, "tenant_id", "default")
     engagement_id = getattr(mw_auth_ctx, "engagement_id", "default")
@@ -61,21 +62,30 @@ async def download_document(
          logger.warning(f"Doc {doc_id} not found. Context: tenant={tenant_id}, eng={engagement_id}")
          raise HTTPException(status_code=404, detail="Document Not Found")
 
-    # Name & MimeType
+    # [Fix] Field Name Normalization (Snake vs Camel)
     title = doc.get("title") or doc.get("name") or "document"
-    # [Fix] Do NOT modify extension yet. Wait until we know if it's Export or Media.
-    filename = title 
+    filename = title
     
     mime_type = doc.get("mime_type") or doc.get("mimeType") or ""
     gcs_uri = doc.get("gcs_uri") or doc.get("gcsUri")
     source_link = doc.get("source_link") or doc.get("webViewLink")
 
+    # 확장자 보정 (PDF default)
+    if "application/vnd.google-apps" in mime_type:
+        if not filename.endswith(".pdf") and not filename.endswith(".xlsx") and not filename.endswith(".pptx"): 
+             filename += ".pdf" 
+
+    # [Fix] Filename Encoding (RFC 5987)
+    # Prevent 'latin-1' codec error for Korean filenames
+    filename_encoded = quote(filename.encode('utf-8'))
+    content_disposition = f"attachment; filename*=UTF-8''{filename_encoded}"
+    
     # 2. Log Action (Initiated)
     log_user_action(
         user=current_user,
         action=ActionType.DOWNLOAD,
         file_id=doc_id,
-        details={"title": filename}
+        details={"title": filename, "method_attempt": "gcs_first"}
     )
     logger.info(f"Download Initiated: {doc_id} by {current_user.email}")
 
@@ -95,11 +105,9 @@ async def download_document(
                             while chunk := f.read(1024 * 1024): # 1MB
                                 yield chunk
                     
-                    # [Fix] RFC 5987 Compliance
-                    filename_encoded = quote(filename.encode('utf-8'))
                     headers = {
-                        'Content-Disposition': f"attachment; filename*=UTF-8''{filename_encoded}",
-                        'Content-Type': mime_type or "application/octet-stream"
+                        'Content-Disposition': content_disposition,
+                        'Content-Type': mime_type or "application/pdf"
                     }
                     if filename.endswith(".pdf"): headers['Content-Type'] = "application/pdf"
                     
@@ -134,67 +142,61 @@ async def download_document(
         try:
             authed_session = AuthorizedSession(user_creds)
             
-            # [Fix] Priority: Media (Original) > Export (Converted)
-            # This ensures images/PDFs are downloaded as-is, and only Google Docs are converted.
+            # [Fix] Smart Proxy Strategy with Retry
+            primary_url = None
+            secondary_url = None
             
-            media_url = f"https://www.googleapis.com/drive/v3/files/{drive_file_id}?alt=media"
+            export_mime_pdf = "application/pdf"
+            export_mime_sheet = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            export_mime_ppt = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
             
-            logger.info(f"Proxy Attempt 1 (Media): {media_url}")
-            drive_resp = authed_session.get(media_url, stream=True)
+            is_google_doc = "application/vnd.google-apps" in mime_type
             
-            final_mode = "media"
-            final_mime_type = mime_type
-            
-            # If Media fails (e.g. Google Doc), try Export
-            if drive_resp.status_code != 200:
-                error_msg = drive_resp.text
-                if "fileNotDownloadable" in error_msg or "Export only supports" in error_msg or drive_resp.status_code == 403 or drive_resp.status_code == 400:
-                     logger.warning(f"Media download failed ({drive_resp.status_code}), trying Export...")
-                     
-                     # Determine Export Mime Type
-                     export_mime = "application/pdf" # Default
-                     if "spreadsheet" in mime_type:
-                         export_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                     elif "presentation" in mime_type:
-                         export_mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                     
-                     export_url = f"https://www.googleapis.com/drive/v3/files/{drive_file_id}/export?mimeType={export_mime}"
-                     
-                     logger.info(f"Proxy Attempt 2 (Export): {export_url}")
-                     drive_resp = authed_session.get(export_url, stream=True)
-                     
-                     final_mode = "export"
-                     final_mime_type = export_mime
+            if is_google_doc:
+                # Primary: Export
+                if "spreadsheet" in mime_type:
+                    primary_url = f"https://www.googleapis.com/drive/v3/files/{drive_file_id}/export?mimeType={export_mime_sheet}"
+                elif "presentation" in mime_type:
+                    primary_url = f"https://www.googleapis.com/drive/v3/files/{drive_file_id}/export?mimeType={export_mime_ppt}"
+                else:
+                    primary_url = f"https://www.googleapis.com/drive/v3/files/{drive_file_id}/export?mimeType={export_mime_pdf}"
+            else:
+                # Primary: Media (Binary File)
+                primary_url = f"https://www.googleapis.com/drive/v3/files/{drive_file_id}?alt=media"
+                # Secondary: Export (Fallback)
+                secondary_url = f"https://www.googleapis.com/drive/v3/files/{drive_file_id}/export?mimeType={export_mime_pdf}"
 
-            # 3. Final Handling
+            def try_download(url):
+                logger.info(f"Proxy Attempt: {url}")
+                resp = authed_session.get(url, stream=True)
+                return resp
+            
+            # 1. Try Primary
+            drive_resp = try_download(primary_url)
+            
+            # 2. If Failed and Secondary exists
+            if drive_resp.status_code != 200 and secondary_url:
+                error_msg = drive_resp.text
+                if "fileNotExportable" in error_msg or "Export only supports" in error_msg:
+                     logger.warning(f"Primary failed (Not Exportable), trying Secondary (Media)...")
+                     drive_resp = try_download(secondary_url)
+                elif "Bad Request" in str(drive_resp.status_code) or "403" in str(drive_resp.status_code):
+                     logger.warning(f"Primary failed ({drive_resp.status_code}), trying Secondary...")
+                     drive_resp = try_download(secondary_url)
+
+            # 3. Final Result Handling
             if drive_resp.status_code == 200:
                 def iter_drive():
                     for chunk in drive_resp.iter_content(chunk_size=1024*1024):
                         if chunk: yield chunk
                 
-                # Fix Filename Extension for Exported Files
-                final_filename = filename
-                if final_mode == "export":
-                    ext_map = {
-                        "application/pdf": ".pdf",
-                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
-                        "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx"
-                    }
-                    ext = ext_map.get(final_mime_type, "")
-                    if ext and not final_filename.endswith(ext):
-                        final_filename += ext
-                
-                # RFC 5987 Encoding
-                filename_encoded = quote(final_filename.encode('utf-8'))
-                
-                # Use Content-Type from response if available, else guessed one
-                content_type = drive_resp.headers.get("Content-Type") or final_mime_type or "application/octet-stream"
+                final_content_type = drive_resp.headers.get("Content-Type", "application/octet-stream")
                 
                 headers = {
-                    'Content-Disposition': f"attachment; filename*=UTF-8''{filename_encoded}",
-                    'Content-Type': content_type
+                    'Content-Disposition': content_disposition, # UTF-8 Encoded
+                    'Content-Type': final_content_type
                 }
-                logger.info(f"Drive Proxy Success for {doc_id} (Mode: {final_mode})")
+                logger.info(f"Drive Proxy Success for {doc_id}")
                 return StreamingResponse(iter_drive(), headers=headers)
             else:
                 logger.error(f"Drive API Proxy Failed Final: {drive_resp.status_code} - {drive_resp.text}")
