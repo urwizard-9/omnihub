@@ -12,11 +12,6 @@ export interface User {
   lastLoginAt?: string;
 }
 
-export interface UserProfile extends User {
-  userId: string;
-  monitored_folder_ids?: string[];
-}
-
 export type ViewMode = 'virtual' | 'actual';
 
 export type SecurityLevel = 'low' | 'medium' | 'high';
@@ -57,49 +52,11 @@ export interface EventLog {
   category?: 'SYSTEM' | 'SECURITY';
 }
 
-// --- Risk Dashboard ---
-export interface RiskMetadata {
-  userDownloads5m?: number;
-  zPos?: number;
-  eventId?: string;
-}
-
-export interface RiskGcsInfo {
-  bucket?: string;
-  name?: string;
-  generation?: string;
-}
-
-export interface RiskData {
-  riskScore: number;
-  defconMode: string;
-  eventType: string;
-  eventRisk: number;
-
-  lastEventAt: string; // ISO string
-  updatedAt: string; // ISO string
-  userId: string;
-
-  traceId?: string;
-  stateChanged?: boolean;
-
-  // Autoencoder Metrics
-  reconError?: number;
-  trainMean?: number;
-  trainStd?: number;
-  p95Threshold?: number;
-
-  metadata?: RiskMetadata;
-  gcs?: RiskGcsInfo;
-}
-
 export interface SecurityState {
   riskScore: number; // 0~100
   mode: 'SAFE' | 'WATCH' | 'ALERT';
   softBlocked: boolean;
   blockedCount: number;
-  // New
-  latestEvent?: RiskData;
 }
 
 // --- AI-A Integration Types ---
@@ -141,7 +98,7 @@ export interface RAGRequest {
 export interface GraphNode {
   id: string;
   label?: string;
-  group?: string; // "document" or "concept"
+  group?: 'document' | 'concept'; // Main Category
   type?: string; // Sub Category (e.g. "PERSON", "ORG", or "pdf")
   val?: number; // Size/Weight
   mentions?: number;

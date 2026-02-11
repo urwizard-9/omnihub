@@ -35,7 +35,7 @@ export interface DocDetail extends DocCard {
         security_level?: string;
         ssot_level?: string;
     };
-    // SSOT Reliability Fields
+    // New SSOT Fields
     ssot_score?: number;
     ssot_explain?: string;
     ssot_signals?: Array<{
@@ -47,15 +47,6 @@ export interface DocDetail extends DocCard {
     security_explain?: string;
     concepts?: any[];
     evidence?: any[];
-}
-
-export interface DownloadResponse {
-    doc_id: string;
-    url: string; // The primary download link
-    download_url?: string; // Alias
-    method?: string; // 'webview', 'export_pdf', 'drive_direct', etc.
-    filename?: string;
-    mime_type?: string;
 }
 
 export const DocService = {
@@ -85,8 +76,8 @@ export const DocService = {
         return await res.json();
     },
 
-    // 3. Get Secure Download URL (Legacy)
-    getDownloadUrl: async (docId: string): Promise<DownloadResponse> => {
+    // 3. Get Secure Download URL
+    getDownloadUrl: async (docId: string): Promise<string> => {
         const res = await fetch(`${API_BASE_URL}/api/docs/${docId}/download`, {
             headers: getHeaders()
         });
@@ -94,40 +85,7 @@ export const DocService = {
             const err = await res.json();
             throw new Error(err.detail || "Failed to get download link");
         }
-        return await res.json();
-    },
-
-    // 4. Download Document (Streaming Support)
-    downloadDocument: async (docId: string): Promise<any> => {
-        const res = await fetch(`${API_BASE_URL}/api/docs/${docId}/download`, {
-            headers: getHeaders()
-        });
-
-        if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error(err.detail || `Download failed: ${res.status}`);
-        }
-
-        const contentType = res.headers.get("content-type") || "";
-
-        // A. JSON Response (Fallback)
-        if (contentType.includes("application/json")) {
-            return await res.json();
-        }
-
-        // B. Blob Response (Streaming)
-        const blob = await res.blob();
-
-        // Extract Filename from Content-Disposition
-        const disposition = res.headers.get('Content-Disposition');
-        let filename = 'document.pdf';
-        if (disposition && disposition.indexOf('filename=') !== -1) {
-            const matches = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/.exec(disposition);
-            if (matches != null && matches[1]) {
-                filename = matches[1].replace(/['"]/g, '');
-            }
-        }
-
-        return { blob, filename, contentType };
+        const data = await res.json();
+        return data.url;
     }
 };

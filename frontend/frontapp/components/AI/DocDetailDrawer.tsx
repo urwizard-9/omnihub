@@ -50,7 +50,8 @@ const DocDetailDrawer: React.FC<Props> = ({ docId, onClose }) => {
         metadata: true,
         actions: true,
         concepts: true,
-        evidence: true
+        evidence: true,
+        ssot: true
     });
 
     const [rejectMode, setRejectMode] = useState(false);
@@ -330,6 +331,74 @@ const DocDetailDrawer: React.FC<Props> = ({ docId, onClose }) => {
                     </div>
                 )}
 
+                {/* SSOT Reliability Analysis */}
+                {(doc.ssot_score !== undefined || doc.ssot_explain) && (
+                    <CollapsibleSection
+                        title="SSOT Reliability Analysis"
+                        isOpen={sections.ssot}
+                        onToggle={() => toggleSection('ssot')}
+                    >
+                        <div className="space-y-4">
+                            {/* Score Gauge */}
+                            <div className="flex items-center gap-4">
+                                <div className="relative w-16 h-16">
+                                    <svg className="w-16 h-16 -rotate-90" viewBox="0 0 36 36">
+                                        <path
+                                            className="text-slate-700"
+                                            strokeDasharray="100, 100"
+                                            d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            strokeWidth="3"
+                                        />
+                                        <path
+                                            className={`${(doc.ssot_score || 0) >= 70 ? 'text-emerald-500' : (doc.ssot_score || 0) >= 40 ? 'text-amber-500' : 'text-red-500'}`}
+                                            strokeDasharray={`${doc.ssot_score || 0}, 100`}
+                                            d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            strokeWidth="3"
+                                            strokeLinecap="round"
+                                        />
+                                    </svg>
+                                    <div className="absolute inset-0 flex items-center justify-center">
+                                        <span className="text-lg font-bold text-white">{doc.ssot_score || 0}</span>
+                                    </div>
+                                </div>
+                                <div className="flex-1">
+                                    <div className="text-xs text-slate-400 uppercase tracking-wider mb-1">Reliability Score</div>
+                                    <div className="text-sm text-slate-200 leading-relaxed">{doc.ssot_explain || 'No explanation available'}</div>
+                                </div>
+                            </div>
+
+                            {/* Security Explanation */}
+                            {doc.security_explain && (
+                                <div className="p-3 bg-black/30 rounded-lg border border-white/5">
+                                    <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1 flex items-center gap-1">
+                                        <Shield size={10} /> Security Reason
+                                    </div>
+                                    <div className="text-xs text-slate-300">{doc.security_explain}</div>
+                                </div>
+                            )}
+
+                            {/* Signal Breakdown */}
+                            {doc.ssot_signals && doc.ssot_signals.length > 0 && (
+                                <div className="space-y-2">
+                                    <div className="text-[10px] text-slate-500 uppercase tracking-wider">Signal Breakdown</div>
+                                    {doc.ssot_signals.slice(0, 5).map((sig, i) => (
+                                        <div key={i} className="flex items-center justify-between text-xs p-2 bg-black/20 rounded border border-white/5">
+                                            <span className="text-slate-400 truncate max-w-[200px]">{sig.evidence}</span>
+                                            <span className={`font-mono font-bold ${sig.delta > 0 ? 'text-emerald-400' : sig.delta < 0 ? 'text-red-400' : 'text-slate-500'}`}>
+                                                {sig.delta > 0 ? '+' : ''}{sig.delta}
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    </CollapsibleSection>
+                )}
+
                 {/* 1. AI Summary */}
                 {(doc.card?.l1 || doc.card?.l2) && (
                     <CollapsibleSection
@@ -352,6 +421,13 @@ const DocDetailDrawer: React.FC<Props> = ({ docId, onClose }) => {
                                     <span className="opacity-90 keep-all font-light">{line.replace(/^- /, '')}</span>
                                 </li>
                             ))}
+                            {/* L3 Summary (Detailed Context) */}
+                            {doc.card?.l3 && (
+                                <li className="flex gap-4 text-xs text-slate-400 leading-relaxed group mt-2 pt-2 border-t border-white/5">
+                                    <div className="shrink-0 w-1.5 h-1.5 rounded-full bg-indigo-500 mt-1.5 group-hover:shadow-[0_0_8px_#6366f1] transition-all"></div>
+                                    <span className="opacity-80 keep-all font-light italic">{doc.card.l3}</span>
+                                </li>
+                            )}
                         </ul>
                     </CollapsibleSection>
                 )}

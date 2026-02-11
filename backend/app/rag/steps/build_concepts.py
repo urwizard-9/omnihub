@@ -94,28 +94,16 @@ class ConceptBuilder:
     def process_single_document(self, doc_id: str):
         """
         단일 문서에 대한 Concept Incremental Update
-        **CRITICAL**: Concept Map은 Global State이므로 동시성 제어가 필수입니다.
-        (Distributed Lock 적용)
+        [MVP] 락 없이 병렬 처리 (일부 lost update 허용)
         """
         profile_ref = self.db.collection("profiles").document(doc_id).get()
         if not profile_ref.exists: return
         
         tenant = getattr(settings, "TENANT_ID", "default")
         engagement = getattr(settings, "ENGAGEMENT_ID", "default")
-        
-        # Lock Key Scope: Tenant + Engagement
-        lock_key = f"concept_map_lock__{tenant}__{engagement}"
-        
-        # Try Lock
-        if not self.acquire_lock(lock_key, timeout_sec=60):
-            logger.warning(f"🔒 [Concept] Lock busy for {doc_id}. Retrying once...")
-            time.sleep(2)
-            if not self.acquire_lock(lock_key, timeout_sec=60):
-                logger.error(f"❌ [Concept] Failed to acquire lock for {doc_id}. Skipping run.")
-                return
 
         try:
-            logger.info(f"🧠 [Concept] Incremental update for {doc_id} (Locked)")
+            logger.info(f"🧠 [Concept] Incremental update for {doc_id}")
             
             ent_ref = self.db.collection("entities").document(doc_id).get()
             if not ent_ref.exists:
@@ -129,7 +117,7 @@ class ConceptBuilder:
                 logger.warning(f"SKIP {doc_id}: Empty entities list")
                 return
             
-            # Global Map Load (Always FRESH from GCS inside Lock)
+            # Global Map Load
             existing_map = self._load_existing_concept_map()
             
             batch = self.db.batch()
@@ -189,8 +177,6 @@ class ConceptBuilder:
                     for alias in merged_aliases:
                         norm_alias = self.normalize_name(alias)
                         map_key = f"{type_}:{norm_alias}"
-                        # Only add if not in existing map or overwriting same ID
-                        # (Safe to overwrite as ID is deterministic)
                         new_map_entries[map_key] = concept_id
                         
                     batch.set(self.db.collection("concepts").document(concept_id), update_data, merge=True)
@@ -228,18 +214,15 @@ class ConceptBuilder:
             if batch_count > 0:
                 batch.commit()
             
-            # C. Save Merged Map (Atomic Update via Lock)
+            # C. Save Merged Map (may have minor lost updates in parallel — OK for MVP)
             if new_map_entries:
                 merged_map = {**existing_map, **new_map_entries}
-                # Check diff count to log
                 diff = len(merged_map) - len(existing_map)
                 if diff > 0:
                     self.save_concept_map(merged_map)
                     logger.info(f"   📊 Concept Map Updated: +{diff} entries")
             
-            # Flag Off (concepts=False)
-            # Next Step Trigger? Usually Edges step follows.
-            # Usually Pipeline Runner handles trigger, but here we just flag off.
+            # Flag Off
             self.db.collection("profiles").document(doc_id).set({
                 "process_flags": {"concepts": False}
             }, merge=True)
@@ -248,11 +231,6 @@ class ConceptBuilder:
 
         except Exception as e:
             logger.error(f"❌ [Concept] Error processing {doc_id}: {e}")
-            # Do NOT flag off, let it retry? Or flag fail?
-            # For now, just log.
-
-        finally:
-            self.release_lock(lock_key)
     
     def _load_existing_concept_map(self) -> dict:
         """기존 Concept Map 로드 (없으면 빈 dict 반환)"""

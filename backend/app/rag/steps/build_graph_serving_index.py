@@ -89,7 +89,8 @@ class GraphServingIndexBuilder:
         valid_doc_ids = set()
         for d in docs_ref:
             data = d.to_dict()
-            status = data.get("review_status")
+            # review_status 또는 stage 필드로 상태 확인 (둘 다 허용)
+            status = data.get("review_status") or data.get("stage", "")
             if status not in self.allowed_statuses:
                 continue
             

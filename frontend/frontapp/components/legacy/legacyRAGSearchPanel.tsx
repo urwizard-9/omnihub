@@ -115,7 +115,7 @@ const RAGSearchPanel: React.FC<Props> = ({ onCitationClick }) => {
     const getDocMetadata = (docId: string, cit: Citation) => {
         const found = docs.find(d => d.id === docId);
 
-        // Prefer API citation data if available (SSOT Analysis)
+        // Prefer API citation data if available (Phase 5 Update)
         const ssotScore = cit.ssot_score ?? (found?.ssotRating === 'gold' ? 90 : found?.ssotRating === 'silver' ? 70 : 50);
         const ssotExplain = cit.ssot_explain;
 
@@ -129,8 +129,7 @@ const RAGSearchPanel: React.FC<Props> = ({ onCitationClick }) => {
 
     return (
         <div className="flex flex-col h-full bg-[#1E1F2E] border-l border-white/5 relative">
-
-            {/* Header: Neural Link */}
+            {/* Header ... */}
             <div className="absolute top-0 left-0 w-full px-4 py-3 z-20 flex items-center justify-between text-indigo-400/80 bg-[#1E1F2E]/80 backdrop-blur-sm border-b border-indigo-500/10">
                 <div className="flex items-center gap-2">
                     <Sparkles size={14} className="animate-pulse" />
@@ -155,23 +154,17 @@ const RAGSearchPanel: React.FC<Props> = ({ onCitationClick }) => {
                 )}
 
                 {!ragResponse && !loading && !error && (
-                    /* EMPTY STATE / STANDBY */
+                    /* EMPTY STATE */
                     <div className="flex-1 flex flex-col items-center justify-center text-center space-y-8 animate-in fade-in zoom-in-95 duration-700 opacity-80">
                         <div className="relative group">
                             <div className="absolute inset-0 bg-indigo-500/20 blur-2xl rounded-full animate-pulse"></div>
                             <div className="w-32 h-32 bg-[#0f172a] rounded-full border-2 border-indigo-500/30 flex items-center justify-center relative z-10 shadow-[0_0_30px_rgba(99,102,241,0.1)] group-hover:border-indigo-400/60 transition-colors">
                                 <Cpu className="text-indigo-400 animate-pulse" size={48} />
-                                <div className="absolute inset-0 border border-indigo-500/10 rounded-full w-full h-full animate-[spin_10s_linear_infinite]"></div>
-                                <div className="absolute inset-2 border border-indigo-500/10 rounded-full w-[88%] h-[88%] animate-[spin_15s_linear_infinite_reverse]"></div>
                             </div>
                         </div>
-
                         <div className="space-y-2">
                             <h3 className="text-lg font-bold text-white tracking-widest uppercase">Core Online</h3>
-                            <div className="flex items-center justify-center gap-2">
-                                <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
-                                <p className="text-xs text-slate-400 font-mono">System Ready. Awaiting command...</p>
-                            </div>
+                            <p className="text-xs text-slate-400 font-mono">System Ready. Awaiting command...</p>
                         </div>
                     </div>
                 )}
@@ -186,9 +179,7 @@ const RAGSearchPanel: React.FC<Props> = ({ onCitationClick }) => {
                 )}
 
                 {ragResponse && parsedData && !loading && (
-                    /* RESULT STATE - 3 Cards */
                     <div className="flex flex-col gap-6 pb-6 mt-4">
-
                         {/* 1. User Query Log */}
                         <div className="flex justify-end animate-in slide-in-from-right-10 fade-in duration-300">
                             <div className="max-w-[85%] bg-slate-800/80 backdrop-blur border border-slate-600/30 rounded-2xl rounded-tr-none p-4 shadow-lg">
@@ -209,134 +200,108 @@ const RAGSearchPanel: React.FC<Props> = ({ onCitationClick }) => {
                                 <div className="h-px bg-indigo-900/50 flex-1"></div>
                             </div>
 
-                            <div className="space-y-3">
-                                {/* Card 1: Executive Summary (Indigo) */}
-                                <div className="glass-panel p-4 rounded-xl border-l-4 border-l-indigo-500 shadow-[0_4px_20px_rgba(0,0,0,0.2)] bg-[#1e293b]/50">
-                                    <div className="flex items-center gap-2 mb-2">
-                                        <Terminal size={12} className="text-indigo-400" />
-                                        <span className="text-indigo-100 font-bold text-[10px] uppercase tracking-wider">Executive Summary</span>
-                                    </div>
-                                    <p className="text-sm text-slate-200 leading-relaxed keep-all font-light whitespace-pre-wrap">
-                                        {parsedData.conclusion}
-                                    </p>
+                            {/* Summary Card */}
+                            <div className="glass-panel p-4 rounded-xl border-l-4 border-l-indigo-500 shadow-[0_4px_20px_rgba(0,0,0,0.2)] bg-[#1e293b]/50">
+                                <p className="text-sm text-slate-200 leading-relaxed keep-all font-light whitespace-pre-wrap">{parsedData.conclusion}</p>
+                            </div>
+
+                            {/* Basis Card */}
+                            {parsedData.basis && (
+                                <div className="glass-panel p-4 rounded-xl border-l-4 border-l-amber-500 bg-amber-950/10">
+                                    <div className="text-sm text-slate-200 leading-relaxed keep-all font-light whitespace-pre-wrap">{parsedData.basis}</div>
                                 </div>
+                            )}
 
-                                {/* Card 2: Analysis Basis (Amber) */}
-                                {parsedData.basis && (
-                                    <div className="glass-panel p-4 rounded-xl border-l-4 border-l-amber-500 bg-amber-950/10">
-                                        <div className="flex items-center gap-2 mb-2">
-                                            <FileText size={12} className="text-amber-400" />
-                                            <span className="text-amber-100 font-bold text-[10px] uppercase tracking-wider">Analysis Basis</span>
-                                        </div>
-                                        <div className="text-sm text-slate-200 leading-relaxed keep-all font-light whitespace-pre-wrap">
-                                            {parsedData.basis}
-                                        </div>
+                            {/* Risk Card */}
+                            {parsedData.risk && (
+                                <div className="glass-panel p-4 rounded-xl border-l-4 border-l-red-500 bg-red-950/10">
+                                    <div className="text-sm text-slate-200 leading-relaxed keep-all font-light whitespace-pre-wrap">{parsedData.risk}</div>
+                                </div>
+                            )}
+
+                            {/* Reference Data with SSOT */}
+                            {ragResponse.citations.length > 0 && (
+                                <div className="mt-2 bg-[#0B0C15]/50 rounded-xl border border-white/5 overflow-hidden">
+                                    <div className="px-4 py-2 bg-white/5 border-b border-white/5 flex items-center justify-between">
+                                        <span className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-2">
+                                            <Hash size={10} /> Reference Data ({ragResponse.citations.length})
+                                        </span>
                                     </div>
-                                )}
+                                    <div className="divide-y divide-white/5">
+                                        {ragResponse.citations.map((cit) => {
+                                            const meta = getDocMetadata(cit.doc_id, cit); // Pass cit
+                                            return (
+                                                <button
+                                                    key={cit.idx}
+                                                    onClick={() => onCitationClick(cit.doc_id)}
+                                                    className="w-full text-left px-4 py-3 hover:bg-indigo-500/10 transition-colors flex items-center gap-3 group relative overflow-hidden"
+                                                >
+                                                    {/* SSOT Glow if High Score */}
+                                                    {meta.ssotScore >= 80 && (
+                                                        <div className="absolute left-0 top-0 bottom-0 w-1 bg-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.5)]"></div>
+                                                    )}
 
-                                {/* Card 3: Risk Assessment (Red) */}
-                                {parsedData.risk && (
-                                    <div className="glass-panel p-4 rounded-xl border-l-4 border-l-red-500 bg-red-950/10">
-                                        <div className="flex items-center gap-2 mb-2">
-                                            <AlertTriangle size={12} className="text-red-400" />
-                                            <span className="text-red-100 font-bold text-[10px] uppercase tracking-wider">Risk Assessment</span>
-                                        </div>
-                                        <div className="text-sm text-slate-200 leading-relaxed keep-all font-light whitespace-pre-wrap">
-                                            {parsedData.risk}
-                                        </div>
-                                    </div>
-                                )}
+                                                    <div className="shrink-0 text-slate-500 group-hover:text-indigo-400 mt-0.5">
+                                                        {meta.ssotScore >= 80 ?
+                                                            <Star size={14} className="fill-amber-400 text-amber-400" /> :
+                                                            <FileText size={14} />
+                                                        }
+                                                    </div>
+                                                    <div className="min-w-0 flex-1">
+                                                        <div className="flex items-start justify-between">
+                                                            <div className="text-xs text-slate-300 font-bold truncate group-hover:text-indigo-200 tracking-tight mb-0.5">
+                                                                {cit.title || "Untitled Document"}
+                                                            </div>
+                                                            {cit.source_link && (
+                                                                <a
+                                                                    href={cit.source_link}
+                                                                    target="_blank" rel="noreferrer"
+                                                                    onClick={(e) => e.stopPropagation()}
+                                                                    className="text-[10px] text-slate-600 hover:text-indigo-400 ml-2"
+                                                                >
+                                                                    <ExternalLink size={10} />
+                                                                </a>
+                                                            )}
+                                                        </div>
+                                                        <div className="flex gap-2 items-center flex-wrap">
+                                                            <span className="text-[10px] text-slate-500 font-mono">Page {cit.page || '?'}</span>
+                                                            <span className="text-[9px] text-slate-600">|</span>
+                                                            <span className="text-[10px] text-slate-500 font-mono">{meta.owner}</span>
 
-                                {/* Card 4: Reference Data (Rich UI) */}
-                                {ragResponse.citations.length > 0 && (
-                                    <div className="mt-2 bg-[#0B0C15]/50 rounded-xl border border-white/5 overflow-hidden">
-                                        <div className="px-4 py-2 bg-white/5 border-b border-white/5 flex items-center justify-between">
-                                            <span className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-2">
-                                                <Hash size={10} /> Reference Data ({ragResponse.citations.length})
-                                            </span>
-                                        </div>
-                                        <div className="divide-y divide-white/5">
-                                            {ragResponse.citations.map((cit) => {
-                                                const meta = getDocMetadata(cit.doc_id, cit);
-                                                return (
-                                                    <button
-                                                        key={cit.idx}
-                                                        onClick={() => onCitationClick(cit.doc_id)}
-                                                        className="w-full text-left px-4 py-3 hover:bg-indigo-500/10 transition-colors flex items-center gap-3 group relative overflow-hidden"
-                                                    >
-                                                        {/* SSOT Glow if High Score */}
-                                                        {meta.ssotScore >= 80 && (
-                                                            <div className="absolute left-0 top-0 bottom-0 w-1 bg-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.5)]"></div>
+                                                            {/* SSOT Score Badge */}
+                                                            {meta.ssotScore > 0 && (
+                                                                <div className={`flex items-center gap-1 px-1.5 py-0.5 rounded ${meta.ssotScore >= 80 ? 'bg-amber-500/20 text-amber-300' : 'bg-slate-700/50 text-slate-400'}`}>
+                                                                    <span className="text-[9px] font-bold">SSOT {meta.ssotScore}</span>
+                                                                </div>
+                                                            )}
+                                                        </div>
+
+                                                        {/* Snippet Preview */}
+                                                        {cit.snippet && (
+                                                            <div className="mt-1 text-[10px] text-slate-600 line-clamp-1 italic">
+                                                                "{cit.snippet}"
+                                                            </div>
                                                         )}
 
-                                                        <div className="shrink-0 text-slate-500 group-hover:text-indigo-400 mt-0.5">
-                                                            {meta.ssotScore >= 80 ?
-                                                                <Star size={14} className="fill-amber-400 text-amber-400" /> :
-                                                                <FileText size={14} />
-                                                            }
-                                                        </div>
-                                                        <div className="min-w-0 flex-1">
-                                                            <div className="flex items-start justify-between">
-                                                                <div className="text-xs text-slate-300 font-bold truncate group-hover:text-indigo-200 tracking-tight mb-0.5">
-                                                                    {cit.title || "Untitled Document"}
-                                                                </div>
-                                                                {/* Optional External Link if exists */}
-                                                                {cit.source_link && (
-                                                                    <a
-                                                                        href={cit.source_link}
-                                                                        target="_blank" rel="noreferrer"
-                                                                        onClick={(e) => e.stopPropagation()}
-                                                                        className="text-[10px] text-slate-600 hover:text-indigo-400 ml-2"
-                                                                    >
-                                                                        <ExternalLink size={10} />
-                                                                    </a>
-                                                                )}
+                                                        {/* SSOT Explanation (If present) */}
+                                                        {meta.ssotExplain && (
+                                                            <div className="mt-1 text-[9px] text-emerald-400/80 line-clamp-1">
+                                                                💡 {meta.ssotExplain}
                                                             </div>
-                                                            <div className="flex gap-2 items-center flex-wrap">
-                                                                <span className="text-[10px] text-slate-500 font-mono">Page {cit.page || '?'}</span>
-                                                                <span className="text-[9px] text-slate-600">|</span>
-                                                                <span className="text-[10px] text-slate-500 font-mono">{meta.owner}</span>
-
-                                                                {/* SSOT Score Badge */}
-                                                                {meta.ssotScore > 0 && (
-                                                                    <div className={`flex items-center gap-1 px-1.5 py-0.5 rounded ${meta.ssotScore >= 80 ? 'bg-amber-500/20 text-amber-300' : 'bg-slate-700/50 text-slate-400'}`}>
-                                                                        <span className="text-[9px] font-bold">SSOT {meta.ssotScore}</span>
-                                                                    </div>
-                                                                )}
-                                                            </div>
-                                                            {/* Snippet Preview (Optional) */}
-                                                            {cit.snippet && (
-                                                                <div className="mt-1 text-[10px] text-slate-600 line-clamp-1 italic">
-                                                                    "{cit.snippet}"
-                                                                </div>
-                                                            )}
-
-                                                            {/* SSOT Explanation (If present) */}
-                                                            {meta.ssotExplain && (
-                                                                <div className="mt-1 text-[9px] text-emerald-400/80 line-clamp-1">
-                                                                    💡 {meta.ssotExplain}
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                        <ArrowRight size={12} className="text-indigo-500 opacity-0 group-hover:opacity-100 -translate-x-2 group-hover:translate-x-0 transition-all" />
-                                                    </button>
-                                                );
-                                            })}
-                                        </div>
+                                                        )}
+                                                    </div>
+                                                </button>
+                                            );
+                                        })}
                                     </div>
-                                )}
-
-                            </div>
+                                </div>
+                            )}
                         </div>
-
                     </div>
                 )}
 
-
-
             </div>
-
-            {/* Input Area */}
+            {/* Input Area ... */}
             <div className="p-4 border-t border-white/5 bg-[#0B0C15]/95 backdrop-blur z-20">
                 <div className="relative group">
                     <input
